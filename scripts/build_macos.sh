@@ -14,8 +14,7 @@ python -m PyInstaller EurorackInventory.spec --noconfirm
 echo "==> Ad-hoc code signing"
 codesign --force --deep --sign - "dist/Simple DIY Synth Inventory.app"
 
-# Create DMG if create-dmg is available
-if command -v create-dmg &> /dev/null; then
+if command -v create-dmg >/dev/null 2>&1; then
     echo "==> Creating DMG"
     create-dmg \
         --volname "Simple DIY Synth Inventory" \
@@ -26,7 +25,7 @@ if command -v create-dmg &> /dev/null; then
         --app-drop-link 450 190 \
         --no-internet-enable \
         "dist/Simple DIY Synth Inventory.dmg" \
-        "dist/Simple DIY Synth Inventory.app"
+        "dist"
     echo "==> Done: dist/Simple DIY Synth Inventory.dmg"
 else
     echo "==> Skipping DMG (install create-dmg: brew install create-dmg)"
