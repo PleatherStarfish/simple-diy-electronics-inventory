@@ -1,0 +1,43 @@
+name: Build & Release macOS DMG
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install '.[dev]'
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build .app and .dmg
+        run: bash scripts/build_macos.sh
+
+      - name: Upload DMG as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleDIYSynthInventory-dmg
+          path: "dist/Simple DIY Synth Inventory.dmg"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "dist/Simple DIY Synth Inventory.dmg"
+          generate_release_notes: true
