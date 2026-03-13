@@ -1,0 +1,37 @@
+2026-03-13 05:57:11,249 | INFO | eurorack_inventory.logging_config | Logging configured at /mnt/data/eurorack_inventory_app/logs/eurorack_inventory.log
+2026-03-13 05:57:11,260 | INFO | eurorack_inventory.db.migrations | Applying migration 1 from 001_initial.sql
+2026-03-13 05:57:11,264 | INFO | eurorack_inventory.db.migrations | Database schema version is 1
+2026-03-13 05:57:11,265 | INFO | eurorack_inventory.services.search | Search index rebuilt with 0 candidates
+2026-03-13 05:57:11,389 | INFO | eurorack_inventory.services.importer | Deleted 0 prior lots for source tag spreadsheet:/mnt/data/eurorack_inventory_app/parts_inventory_clean.xlsx
+2026-03-13 05:57:30,198 | INFO | eurorack_inventory.logging_config | Logging configured at /mnt/data/eurorack_inventory_app/logs/eurorack_inventory.log
+2026-03-13 05:57:30,200 | INFO | eurorack_inventory.db.migrations | Applying migration 1 from 001_initial.sql
+2026-03-13 05:57:30,210 | INFO | eurorack_inventory.db.migrations | Database schema version is 1
+2026-03-13 05:57:30,211 | INFO | eurorack_inventory.services.search | Search index rebuilt with 0 candidates
+2026-03-13 05:57:30,330 | INFO | eurorack_inventory.services.importer | Deleted 0 prior lots for source tag spreadsheet:/mnt/data/eurorack_inventory_app/parts_inventory_clean.xlsx
+2026-03-13 05:57:30,368 | INFO | eurorack_inventory.services.importer | Imported parts=171, updated parts=1, lots=172, skipped rows=36
+2026-03-13 05:57:30,371 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 05:57:30,372 | INFO | eurorack_inventory.main | Imported parts=171, updated parts=1, lots=172, skipped rows=36
+2026-03-13 15:07:31,371 | INFO | eurorack_inventory.logging_config | Logging configured at /Users/danielmiller/dev/projects/eurorack_inventory_app/logs/eurorack_inventory.log
+2026-03-13 15:07:31,375 | INFO | eurorack_inventory.db.migrations | Applying migration 1 from 001_initial.sql
+2026-03-13 15:07:31,380 | INFO | eurorack_inventory.db.migrations | Database schema version is 1
+2026-03-13 15:07:31,381 | INFO | eurorack_inventory.services.search | Search index rebuilt with 0 candidates
+2026-03-13 15:08:25,854 | INFO | eurorack_inventory.services.importer | Deleted 0 prior lots for source tag spreadsheet:/Users/danielmiller/dev/projects/eurorack_inventory_app/parts_inventory_clean.xlsx
+2026-03-13 15:08:25,882 | INFO | eurorack_inventory.services.importer | Imported parts=171, updated parts=1, lots=172, skipped rows=36
+2026-03-13 15:08:25,885 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:14:45,693 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:44:21,156 | INFO | eurorack_inventory.logging_config | Logging configured at /Users/danielmiller/dev/projects/eurorack_inventory_app/logs/eurorack_inventory.log
+2026-03-13 15:44:21,161 | INFO | eurorack_inventory.db.migrations | Applying migration 1 from 001_initial.sql
+2026-03-13 15:44:21,166 | INFO | eurorack_inventory.db.migrations | Database schema version is 1
+2026-03-13 15:44:21,167 | INFO | eurorack_inventory.services.search | Search index rebuilt with 0 candidates
+2026-03-13 15:44:56,961 | INFO | eurorack_inventory.services.importer | Deleted 0 prior lots for source tag spreadsheet:/Users/danielmiller/dev/projects/eurorack_inventory_app/parts_inventory_clean.xlsx
+2026-03-13 15:44:56,989 | INFO | eurorack_inventory.services.importer | Imported parts=171, updated parts=1, lots=172, skipped rows=36
+2026-03-13 15:44:56,992 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:47:07,610 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:47:09,953 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:47:48,012 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
+2026-03-13 15:51:00,594 | INFO | eurorack_inventory.logging_config | Logging configured at /Users/danielmiller/dev/projects/eurorack_inventory_app/logs/eurorack_inventory.log
+2026-03-13 15:51:00,600 | INFO | eurorack_inventory.db.migrations | Database schema version is 1
+2026-03-13 15:51:00,602 | INFO | eurorack_inventory.services.search | Search index rebuilt with 0 candidates
+2026-03-13 15:51:05,779 | INFO | eurorack_inventory.services.importer | Deleted 0 prior lots for source tag spreadsheet:/Users/danielmiller/dev/projects/eurorack_inventory_app/parts_inventory_clean.xlsx
+2026-03-13 15:51:05,804 | INFO | eurorack_inventory.services.importer | Imported parts=171, updated parts=1, lots=172, skipped rows=36
+2026-03-13 15:51:05,807 | INFO | eurorack_inventory.services.search | Search index rebuilt with 563 candidates
