@@ -77,6 +77,18 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        export_csv_action = QAction("Export as &CSV...", self)
+        export_csv_action.setToolTip("Export all data as CSV files in a zip archive")
+        export_csv_action.triggered.connect(self._export_csv)
+        file_menu.addAction(export_csv_action)
+
+        import_csv_action = QAction("Import from CS&V...", self)
+        import_csv_action.setToolTip("Import data from a CSV zip archive")
+        import_csv_action.triggered.connect(self._import_csv)
+        file_menu.addAction(import_csv_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -222,6 +234,82 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Undo", f"Restored {restored} parts.")
         self.refresh_all()
+
+    def _export_csv(self) -> None:
+        from eurorack_inventory.services.csv_backup import (
+            CSVBackupError,
+            default_csv_backup_filename,
+            export_csv,
+        )
+
+        default_path = str(self.db_path.parent / default_csv_backup_filename())
+        dest, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export as CSV",
+            default_path,
+            "Zip Archive (*.zip)",
+        )
+        if not dest:
+            return
+
+        try:
+            result = export_csv(self.context.db.conn, Path(dest))
+            QMessageBox.information(
+                self, "CSV Export complete", f"CSV archive saved to:\n{result}"
+            )
+        except CSVBackupError as exc:
+            QMessageBox.critical(self, "CSV Export failed", str(exc))
+
+    def _import_csv(self) -> None:
+        from eurorack_inventory.services.csv_backup import (
+            CSVBackupError,
+            import_csv,
+            validate_csv_archive,
+        )
+
+        filename, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Import from CSV",
+            str(self.db_path.parent),
+            "Zip Archive (*.zip)",
+        )
+        if not filename:
+            return
+
+        archive_path = Path(filename).resolve()
+
+        # Validate first
+        try:
+            validate_csv_archive(archive_path)
+        except CSVBackupError as exc:
+            QMessageBox.critical(self, "Invalid CSV archive", str(exc))
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Confirm CSV Import",
+            f"This will REPLACE all current data with the contents of:\n"
+            f"{archive_path}\n\n"
+            "This operation cannot be undone.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            counts = import_csv(archive_path, self.context.db.conn)
+            total = sum(counts.values())
+            self.context.search_service.rebuild()
+            self.refresh_all()
+            QMessageBox.information(
+                self,
+                "CSV Import complete",
+                f"Imported {total} rows across {len(counts)} tables.",
+            )
+        except CSVBackupError as exc:
+            QMessageBox.critical(self, "CSV Import failed", str(exc))
 
     def _export_backup(self) -> None:
         from eurorack_inventory.services.backup import (

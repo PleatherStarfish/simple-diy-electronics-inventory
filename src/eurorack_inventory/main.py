@@ -40,6 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Restore the database from a backup file at PATH and exit",
     )
+    parser.add_argument(
+        "--export-csv",
+        metavar="PATH",
+        help="Export all data as CSV files in a zip archive and exit",
+    )
+    parser.add_argument(
+        "--import-csv",
+        metavar="PATH",
+        help="Import data from a CSV zip archive (replaces all current data) and exit",
+    )
     return parser
 
 
@@ -84,6 +94,36 @@ def main(argv: list[str] | None = None) -> int:
             except BackupError as exc:
                 print(f"Export failed: {exc}")
                 return 1
+
+        # ── Headless CSV export ──
+        if args.export_csv:
+            from eurorack_inventory.services.csv_backup import CSVBackupError, export_csv
+
+            dest = Path(args.export_csv).expanduser().resolve()
+            try:
+                result = export_csv(context.db.conn, dest)
+                print(f"CSV backup exported to {result}")
+                return 0
+            except CSVBackupError as exc:
+                print(f"CSV export failed: {exc}")
+                return 1
+
+        # ── Headless CSV import ──
+        if args.import_csv:
+            from eurorack_inventory.services.csv_backup import CSVBackupError, import_csv
+
+            archive = Path(args.import_csv).expanduser().resolve()
+            try:
+                counts = import_csv(archive, context.db.conn)
+                total = sum(counts.values())
+                print(f"CSV import complete: {total} rows across {len(counts)} tables")
+                for table, count in counts.items():
+                    print(f"  {table}: {count}")
+                return 0
+            except CSVBackupError as exc:
+                print(f"CSV import failed: {exc}")
+                return 1
+
         if args.bootstrap_demo_storage:
             context.storage_service.bootstrap_demo_storage()
 

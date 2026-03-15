@@ -328,6 +328,44 @@ python -m eurorack_inventory --help
 | `--import-mode {replace_snapshot,merge_quantities}` | Accepted import mode values; current importer behavior is the same for both |
 | `--headless-import` | Run the import and exit without opening the GUI |
 | `--bootstrap-demo-storage` | Create the demo containers plus the default unassigned location |
+| `--export-backup PATH` | Export a full SQLite database backup to PATH and exit |
+| `--restore-backup PATH` | Restore the database from a SQLite backup file and exit |
+| `--export-csv PATH` | Export all data as CSV files in a zip archive and exit |
+| `--import-csv PATH` | Import data from a CSV zip archive (replaces all current data) and exit |
+
+## Backup and restore
+
+The app provides two complementary ways to protect and export your data.
+
+### SQLite backup (exact database snapshot)
+
+This creates a byte-level copy of the database, preserving all tables, foreign keys, IDs, and migration state. Recommended for disaster recovery.
+
+From the UI: **File > Export Backup...** and **File > Restore Backup...**
+
+From the CLI:
+
+```bash
+python -m eurorack_inventory --export-backup ~/Desktop/backup.db
+python -m eurorack_inventory --restore-backup ~/Desktop/backup.db
+```
+
+Restore always creates a safety copy of the current database before replacing it. The app closes after a UI restore so you can relaunch into the restored data.
+
+### CSV export and import (human-readable)
+
+This exports all tables as CSV files inside a zip archive. The archive can be opened, diffed, or edited in any spreadsheet tool.
+
+From the UI: **File > Export as CSV...** and **File > Import from CSV...**
+
+From the CLI:
+
+```bash
+python -m eurorack_inventory --export-csv ~/Desktop/data.zip
+python -m eurorack_inventory --import-csv ~/Desktop/data.zip
+```
+
+CSV import replaces all current data atomically. If any foreign-key violation is detected the import is rolled back and the database is left untouched.
 
 ## Default filesystem locations
 
