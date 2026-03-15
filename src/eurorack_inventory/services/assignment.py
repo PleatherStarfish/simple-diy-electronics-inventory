@@ -16,6 +16,7 @@ from eurorack_inventory.repositories.audit import AuditRepository
 from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
 from eurorack_inventory.services.classifier import classify_part
+from eurorack_inventory.services.settings import ClassifierSettings, SettingsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,12 @@ class AssignmentService:
         part_repo: PartRepository,
         storage_repo: StorageRepository,
         audit_repo: AuditRepository,
+        settings_repo: SettingsRepository | None = None,
     ) -> None:
         self.part_repo = part_repo
         self.storage_repo = storage_repo
         self.audit_repo = audit_repo
+        self.settings_repo = settings_repo
 
     def assign(
         self,
@@ -84,6 +87,11 @@ class AssignmentService:
         """
         unassigned_slot_id = self._get_unassigned_slot_id()
 
+        # Load classifier settings
+        cls_settings: ClassifierSettings | None = None
+        if self.settings_repo is not None:
+            cls_settings = self.settings_repo.get_classifier_settings()
+
         # 1. Gather parts
         parts = self._gather_parts(mode, scope, unassigned_slot_id)
         if not parts:
@@ -92,7 +100,7 @@ class AssignmentService:
         # 2. Classify parts
         classified: dict[StorageClass, list[Part]] = defaultdict(list)
         for part in parts:
-            sc = classify_part(part)
+            sc = classify_part(part, cls_settings)
             classified[sc].append(part)
 
         # 3. Sort within each class by category then name (for grouping)
@@ -118,7 +126,7 @@ class AssignmentService:
             self.part_repo.bulk_update_slot_ids(assignments)
 
         # 7. Estimate additional storage needed
-        estimate = self._estimate(unassigned_parts)
+        estimate = self._estimate(unassigned_parts, cls_settings)
 
         # 8. Audit
         self.audit_repo.add_event(
@@ -297,11 +305,15 @@ class AssignmentService:
 
         return assignments, unassigned
 
-    def _estimate(self, unassigned_parts: list[Part]) -> StorageEstimate:
+    def _estimate(
+        self,
+        unassigned_parts: list[Part],
+        cls_settings: ClassifierSettings | None = None,
+    ) -> StorageEstimate:
         """Estimate additional storage needed for unassigned parts."""
         counts: dict[StorageClass, int] = defaultdict(int)
         for part in unassigned_parts:
-            sc = classify_part(part)
+            sc = classify_part(part, cls_settings)
             counts[sc] += 1
 
         return StorageEstimate(

@@ -17,6 +17,7 @@ from eurorack_inventory.services.inventory import InventoryService
 from eurorack_inventory.services.modules import ModuleService
 from eurorack_inventory.services.search import SearchService
 from eurorack_inventory.services.assignment import AssignmentService
+from eurorack_inventory.services.settings import SettingsRepository
 from eurorack_inventory.services.storage import StorageService
 
 
@@ -34,6 +35,7 @@ class AppContext:
     search_service: SearchService
     import_service: SpreadsheetImportService
     dashboard_service: DashboardService
+    settings_repo: SettingsRepository
     assignment_service: AssignmentService
 
 
@@ -56,7 +58,8 @@ def build_app_context(db_path: Path) -> AppContext:
     import_service = SpreadsheetImportService(inventory_service, storage_service, audit_repo)
     dashboard_service = DashboardService(part_repo, storage_repo, module_repo, audit_repo)
 
-    assignment_service = AssignmentService(part_repo, storage_repo, audit_repo)
+    settings_repo = SettingsRepository(db)
+    assignment_service = AssignmentService(part_repo, storage_repo, audit_repo, settings_repo)
 
     storage_service.ensure_default_unassigned_slot()
     search_service.rebuild()
@@ -74,5 +77,6 @@ def build_app_context(db_path: Path) -> AppContext:
         search_service=search_service,
         import_service=import_service,
         dashboard_service=dashboard_service,
+        settings_repo=settings_repo,
         assignment_service=assignment_service,
     )

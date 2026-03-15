@@ -10,6 +10,7 @@ from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
 from eurorack_inventory.services.assignment import AssignmentScope, AssignmentService
 from eurorack_inventory.services.inventory import InventoryService
+from eurorack_inventory.services.settings import SettingsRepository
 from eurorack_inventory.services.storage import StorageService
 
 
@@ -25,7 +26,8 @@ def ctx(tmp_path: Path):
     part_repo = PartRepository(db)
     storage_svc = StorageService(storage_repo, audit_repo)
     inventory_svc = InventoryService(part_repo, storage_repo, audit_repo)
-    assignment_svc = AssignmentService(part_repo, storage_repo, audit_repo)
+    settings_repo = SettingsRepository(db)
+    assignment_svc = AssignmentService(part_repo, storage_repo, audit_repo, settings_repo)
     storage_svc.ensure_default_unassigned_slot()
     yield assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, db
     db.close()

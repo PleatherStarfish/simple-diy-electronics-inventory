@@ -96,50 +96,76 @@ class TestLargePartClassification:
 
 class TestLongPartClassification:
     def test_through_hole_resistor_goes_to_long(self):
-        part = _make_part(name="10K 1/4W", category="Resistors")
+        part = _make_part(name="10K 1/4W", category="Resistors", qty=50)
         assert classify_part(part) == StorageClass.LONG_CELL
 
     def test_through_hole_resistor_cut_tape_goes_to_long(self):
-        part = _make_part(name="10K 1/4W", category="Resistors", default_package="cut_tape")
+        part = _make_part(name="10K 1/4W", category="Resistors", default_package="cut_tape", qty=20)
         assert classify_part(part) == StorageClass.LONG_CELL
 
     def test_through_hole_resistor_loose_goes_to_long(self):
-        part = _make_part(name="100R 1/4W", category="Resistors", default_package="loose")
+        part = _make_part(name="100R 1/4W", category="Resistors", default_package="loose", qty=10)
         assert classify_part(part) == StorageClass.LONG_CELL
 
     def test_through_hole_diode_goes_to_long(self):
-        part = _make_part(name="1N4148", category="Diodes")
+        part = _make_part(name="1N4148", category="Diodes", qty=30)
         assert classify_part(part) == StorageClass.LONG_CELL
 
     def test_through_hole_led_goes_to_long(self):
-        part = _make_part(name="Red 3mm LED", category="LEDs")
+        part = _make_part(name="Red 3mm LED", category="LEDs", qty=20)
         assert classify_part(part) == StorageClass.LONG_CELL
 
     def test_through_hole_led_5mm_goes_to_long(self):
-        part = _make_part(name="Green 5mm", category="LEDs")
+        part = _make_part(name="Green 5mm", category="LEDs", qty=15)
+        assert classify_part(part) == StorageClass.LONG_CELL
+
+    def test_very_small_qty_through_hole_goes_to_small(self):
+        """A handful of through-hole resistors can fit in a small cell."""
+        part = _make_part(name="10K 1/4W", category="Resistors", qty=3)
+        assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
+
+    def test_qty_5_through_hole_goes_to_small(self):
+        part = _make_part(name="1N4148", category="Diodes", qty=5)
+        assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
+
+    def test_qty_6_through_hole_goes_to_long(self):
+        part = _make_part(name="1N4148", category="Diodes", qty=6)
         assert classify_part(part) == StorageClass.LONG_CELL
 
 
 class TestSmallPassiveClassification:
     def test_smt_resistor_goes_to_small(self):
-        part = _make_part(name="100R 0805", category="Resistors", default_package="loose")
+        part = _make_part(name="100R 0805", category="Resistors", default_package="loose", qty=50)
         assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
 
     def test_smt_resistor_0603_goes_to_small(self):
-        part = _make_part(name="10K 0603", category="Resistors")
+        part = _make_part(name="10K 0603", category="Resistors", qty=50)
         assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
 
     def test_smt_diode_goes_to_small(self):
-        part = _make_part(name="1N4148 SMD", category="Diodes")
+        part = _make_part(name="1N4148 SMD", category="Diodes", qty=30)
         assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
 
     def test_capacitor_goes_to_small(self):
-        part = _make_part(name="100nF", category="Capacitors")
+        part = _make_part(name="100nF", category="Capacitors", qty=50)
         assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
 
     def test_trimmer_goes_to_small(self):
-        part = _make_part(name="10K Trimmer", category="Trimmers")
+        part = _make_part(name="10K Trimmer", category="Trimmers", qty=5)
         assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
+
+    def test_large_qty_smt_goes_to_large(self):
+        """100+ SMT passives need a larger cell."""
+        part = _make_part(name="100R 0805", category="Resistors", qty=100)
+        assert classify_part(part) == StorageClass.LARGE_CELL
+
+    def test_99_smt_stays_small(self):
+        part = _make_part(name="100R 0805", category="Resistors", qty=99)
+        assert classify_part(part) == StorageClass.SMALL_SHORT_CELL
+
+    def test_large_qty_capacitor_goes_to_large(self):
+        part = _make_part(name="100nF", category="Capacitors", qty=200)
+        assert classify_part(part) == StorageClass.LARGE_CELL
 
 
 class TestFallback:

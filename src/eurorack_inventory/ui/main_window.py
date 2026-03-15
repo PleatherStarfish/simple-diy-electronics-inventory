@@ -20,6 +20,7 @@ from eurorack_inventory.app import AppContext
 from eurorack_inventory.ui.assignment_dialog import AssignmentDialog
 from eurorack_inventory.ui.inventory_screen import InventoryScreen
 from eurorack_inventory.ui.modules_screen import ModulesScreen
+from eurorack_inventory.ui.settings_dialog import SettingsDialog
 from eurorack_inventory.ui.storage_screen import StorageScreen
 from eurorack_inventory.ui.models import AuditTableModel
 
@@ -89,6 +90,11 @@ class MainWindow(QMainWindow):
         assign_action.triggered.connect(self.open_assignment_dialog)
         tools_menu.addAction(assign_action)
 
+        settings_action = QAction("&Settings...", self)
+        settings_action.setToolTip("Configure classifier thresholds and assignment targets")
+        settings_action.triggered.connect(self.open_settings_dialog)
+        tools_menu.addAction(settings_action)
+
         tools_menu.addSeparator()
 
         refresh_action = QAction("Re&fresh", self)
@@ -157,6 +163,13 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
         self.refresh_all()
+
+    def open_settings_dialog(self) -> None:
+        dialog = SettingsDialog(
+            settings_repo=self.context.settings_repo,
+            parent=self,
+        )
+        dialog.exec()
 
     def import_spreadsheet(self) -> None:
         filename, _filter = QFileDialog.getOpenFileName(
