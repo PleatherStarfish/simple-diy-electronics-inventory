@@ -1,4 +1,4 @@
-"""Light mode QSS stylesheet for the Simple DIY Synth Inventory application."""
+"""Light mode QSS stylesheet for the Simple DIY Electronics Inventory application."""
 
 from __future__ import annotations
 

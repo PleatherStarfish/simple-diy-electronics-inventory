@@ -1,6 +1,6 @@
-# Simple DIY Synth Inventory
+# Simple DIY Electronics Inventory
 
-Simple DIY Synth Inventory is a local-first desktop app for tracking DIY synth and Eurorack parts, their physical storage locations, and the inventory needed for module builds. It is implemented in Python with a PySide6 GUI and a single SQLite database file, so there is no server, no cloud account, and no separate backend to deploy.
+Simple DIY Electronics Inventory is a local-first desktop app for tracking DIY electronics parts, their physical storage locations, and the inventory needed for module builds. It is implemented in Python with a PySide6 GUI and a single SQLite database file, so there is no server, no cloud account, and no separate backend to deploy.
 
 This repository contains both the desktop application and the core logic for importing spreadsheets, fuzzy searching parts, modeling physical storage, planning storage assignments, and checking project/BOM availability.
 
@@ -21,7 +21,7 @@ The codebase is already useful, but it is important to describe its current impl
 
 - Each part currently stores a single integer `qty` and one optional `slot_id`. Earlier stock-lot ideas still appear in older comments and migration history, but the active schema stores quantity and location directly on the `parts` table.
 - The UI currently creates and edits grid boxes and binders, plus an automatic fallback container named `Unassigned` with a `Main` slot. The domain model and database also allow generic bins and drawers.
-- The Projects tab is currently a viewer plus build launcher. Project creation, BOM insertion, and build update logging exist in the repository/service layer, but the main desktop UI only exposes project browsing, availability display, and "start new build".
+- The Projects tab supports browsing, availability display, build creation, and renaming. Projects can also be created by promoting a fully verified BOM from the BOMs tab.
 - The CLI accepts `--import-mode replace_snapshot` and `--import-mode merge_quantities`. In the current importer implementation, both values are validated and recorded in audit data, but row handling is the same for both modes.
 
 ## User-facing features
@@ -64,12 +64,27 @@ The codebase is already useful, but it is important to describe its current impl
 - Store every assignment run in the database so the latest run can be undone
 - Report estimated additional storage needed when there are not enough matching slots
 
+### BOMs
+
+- Import and normalize bills of materials in a dedicated BOMs tab
+- Edit normalized items inline: component type, value, quantity, and package hint
+- Filter the normalized table by match status: all, matched, or unmatched
+- Match BOM items to existing inventory parts with fuzzy search scoring and match-reason display
+- Create new inventory parts directly from unmatched BOM items, pre-populated with BOM metadata
+- Skip items that do not need matching
+- Re-normalize a BOM after editing raw items
+- Issues banner highlights problems such as high dropout rates, unmatched items, or missing source files
+- Promote a fully verified BOM to a project for build tracking (all items must be verified first)
+- Generate a shopping list from one or more selected BOMs showing quantities needed, available, and to buy
+- Copy the shopping list to clipboard or export it as CSV
+
 ### Projects and builds
 
 - Display stored projects in a dedicated Projects tab
 - Show project maker, revision, and notes
+- Rename projects via context menu
 - Calculate part availability by comparing BOM requirements with current inventory quantities
-- Create build instances for a project
+- Create build instances for a project with an optional nickname
 - Persist build records in the database
 
 ### Search
@@ -241,8 +256,8 @@ Import behavior today:
 
 ### macOS standalone app
 
-1. Download the latest `.dmg` from [GitHub Releases](https://github.com/danielmiller/simple-diy-synth-inventory/releases).
-2. Drag **Simple DIY Synth Inventory** into `Applications`.
+1. Download the latest `.dmg` from [GitHub Releases](https://github.com/danielmiller/simple-diy-electronics-inventory/releases).
+2. Drag **Simple DIY Electronics Inventory** into `Applications`.
 3. Launch it from `Applications`.
 4. On first launch, macOS may require `right-click -> Open` because the app is ad-hoc signed.
 
@@ -253,8 +268,8 @@ Requires Python 3.11 or newer.
 Recommended with `uv`:
 
 ```bash
-git clone https://github.com/danielmiller/simple-diy-synth-inventory.git
-cd simple-diy-synth-inventory
+git clone https://github.com/danielmiller/simple-diy-electronics-inventory.git
+cd simple-diy-electronics-inventory
 uv sync --dev
 uv run python -m eurorack_inventory
 ```
@@ -262,8 +277,8 @@ uv run python -m eurorack_inventory
 Traditional virtualenv setup:
 
 ```bash
-git clone https://github.com/danielmiller/simple-diy-synth-inventory.git
-cd simple-diy-synth-inventory
+git clone https://github.com/danielmiller/simple-diy-electronics-inventory.git
+cd simple-diy-electronics-inventory
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -372,9 +387,9 @@ CSV import replaces all current data atomically. If any foreign-key violation is
 If `--db` is not provided, the app creates its data under a platform-specific app-data directory.
 
 - macOS database:
-  - `~/Library/Application Support/Simple DIY Synth Inventory/eurorack_inventory.db`
+  - `~/Library/Application Support/Simple DIY Electronics Inventory/eurorack_inventory.db`
 - Linux database:
-  - `~/.local/share/simple-diy-synth-inventory/eurorack_inventory.db`
+  - `~/.local/share/simple-diy-electronics-inventory/eurorack_inventory.db`
 - Runtime logs:
   - `<database directory>/logs/`
 
@@ -391,8 +406,8 @@ The script currently:
 
 - removes `build/` and `dist/`
 - runs PyInstaller with `EurorackInventory.spec`
-- applies ad-hoc code signing to `dist/Simple DIY Synth Inventory.app`
-- optionally creates `dist/Simple DIY Synth Inventory.dmg` if `create-dmg` is installed
+- applies ad-hoc code signing to `dist/Simple DIY Electronics Inventory.app`
+- optionally creates `dist/Simple DIY Electronics Inventory.dmg` if `create-dmg` is installed
 
 If needed:
 
@@ -414,6 +429,7 @@ The current test suite covers:
 - storage geometry and configuration
 - auto-assignment planning and undo behavior
 - classifier rules and settings persistence
+- BOM repository, service, extraction, and normalization
 - selected UI dialog and screen behavior
 
 ## Repository layout
@@ -439,7 +455,7 @@ scripts/               # build helpers
 - One part currently maps to one stored quantity and one primary location. If you need the same part split across multiple physical locations, that is not yet modeled in the active schema.
 - The importer does not currently use spreadsheet location columns to place parts automatically.
 - The demo bootstrap creates named example containers, but it is not a full sample dataset with seeded part assignments.
-- The main desktop UI does not yet provide full project/BOM authoring flows even though the lower layers already support them.
+- The main desktop UI supports BOM import, matching, and promotion to projects, but does not yet support manually authoring a BOM from scratch.
 
 ## Summary
 

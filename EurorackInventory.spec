@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Simple DIY Synth Inventory macOS app
+# PyInstaller spec for Simple DIY Electronics Inventory macOS app
 
 a = Analysis(
     ['src/eurorack_inventory/__main__.py'],
@@ -24,7 +24,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SimpleDIYSynthInventory',
+    name='SimpleDIYElectronicsInventory',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -39,18 +39,18 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='SimpleDIYSynthInventory',
+    name='SimpleDIYElectronicsInventory',
 )
 
 app = BUNDLE(
     coll,
-    name='Simple DIY Synth Inventory.app',
+    name='Simple DIY Electronics Inventory.app',
     icon='src/eurorack_inventory/resources/AppIcon.icns',
-    bundle_identifier='com.danielmiller.simple-diy-synth-inventory',
+    bundle_identifier='com.danielmiller.simple-diy-electronics-inventory',
     info_plist={
         'CFBundleShortVersionString': '0.1.0',
-        'CFBundleName': 'Simple DIY Synth Inventory',
-        'CFBundleDisplayName': 'Simple DIY Synth Inventory',
+        'CFBundleName': 'Simple DIY Electronics Inventory',
+        'CFBundleDisplayName': 'Simple DIY Electronics Inventory',
         'NSHighResolutionCapable': True,
     },
 )

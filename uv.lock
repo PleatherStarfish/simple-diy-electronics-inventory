@@ -481,7 +481,7 @@ wheels = [
 ]
 
 [[package]]
-name = "simple-diy-synth-inventory"
+name = "simple-diy-electronics-inventory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

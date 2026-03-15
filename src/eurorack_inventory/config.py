@@ -28,8 +28,8 @@ class AppPaths:
     @classmethod
     def default(cls) -> "AppPaths":
         if sys.platform == "darwin":
-            base = Path.home() / "Library" / "Application Support" / "Simple DIY Synth Inventory"
+            base = Path.home() / "Library" / "Application Support" / "Simple DIY Electronics Inventory"
         else:
-            base = Path.home() / ".local" / "share" / "simple-diy-synth-inventory"
+            base = Path.home() / ".local" / "share" / "simple-diy-electronics-inventory"
         base.mkdir(parents=True, exist_ok=True)
         return cls.from_db_path(base / "eurorack_inventory.db")

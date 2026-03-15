@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.context = context
         self.db_path = db_path
-        self.setWindowTitle("Simple DIY Synth Inventory")
+        self.setWindowTitle("Simple DIY Electronics Inventory")
         self.resize(1400, 900)
 
         self.inventory_screen = InventoryScreen(context)

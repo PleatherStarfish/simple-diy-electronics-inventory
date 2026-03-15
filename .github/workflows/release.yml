@@ -33,11 +33,11 @@ jobs:
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SimpleDIYSynthInventory-dmg
-          path: "dist/Simple DIY Synth Inventory.dmg"
+          name: SimpleDIYElectronicsInventory-dmg
+          path: "dist/Simple DIY Electronics Inventory.dmg"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: "dist/Simple DIY Synth Inventory.dmg"
+          files: "dist/Simple DIY Electronics Inventory.dmg"
           generate_release_notes: true

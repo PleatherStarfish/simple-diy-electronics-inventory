@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "simple-diy-synth-inventory"
+name = "simple-diy-electronics-inventory"
 version = "0.1.0"
-description = "Local-first desktop inventory app for DIY synth parts"
+description = "Local-first desktop inventory app for DIY electronics parts"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Simple DIY Synth Inventory desktop app")
-    parser.add_argument("--db", default=None, help="Path to SQLite database file (default: ~/Library/Application Support/Simple DIY Synth Inventory/)")
+    parser = argparse.ArgumentParser(description="Simple DIY Electronics Inventory desktop app")
+    parser.add_argument("--db", default=None, help="Path to SQLite database file (default: ~/Library/Application Support/Simple DIY Electronics Inventory/)")
     parser.add_argument("--import", dest="import_path", help="Optional spreadsheet path to import")
     parser.add_argument(
         "--import-mode",
