@@ -65,6 +65,18 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        export_backup_action = QAction("Export &Backup...", self)
+        export_backup_action.setToolTip("Export a full database backup")
+        export_backup_action.triggered.connect(self._export_backup)
+        file_menu.addAction(export_backup_action)
+
+        restore_backup_action = QAction("&Restore Backup...", self)
+        restore_backup_action.setToolTip("Restore the database from a backup file")
+        restore_backup_action.triggered.connect(self._restore_backup)
+        file_menu.addAction(restore_backup_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -210,6 +222,106 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Undo", f"Restored {restored} parts.")
         self.refresh_all()
+
+    def _export_backup(self) -> None:
+        from eurorack_inventory.services.backup import (
+            BackupError,
+            default_backup_filename,
+            export_backup,
+        )
+
+        default_path = str(self.db_path.parent / default_backup_filename())
+        dest, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Backup",
+            default_path,
+            "SQLite Database (*.db)",
+        )
+        if not dest:
+            return
+
+        dest_path = Path(dest).resolve()
+        if dest_path == self.db_path.resolve():
+            QMessageBox.critical(
+                self,
+                "Export failed",
+                "Cannot export over the live database file.\nChoose a different location.",
+            )
+            return
+
+        try:
+            result = export_backup(self.context.db.conn, dest_path)
+            QMessageBox.information(
+                self, "Export complete", f"Backup saved to:\n{result}"
+            )
+        except BackupError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
+    def _restore_backup(self) -> None:
+        from eurorack_inventory.services.backup import (
+            BackupError,
+            restore_backup,
+            validate_backup,
+        )
+
+        filename, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Restore Backup",
+            str(self.db_path.parent),
+            "SQLite Database (*.db)",
+        )
+        if not filename:
+            return
+
+        backup_path = Path(filename).resolve()
+        if backup_path == self.db_path.resolve():
+            QMessageBox.critical(
+                self,
+                "Restore failed",
+                "Cannot restore from the live database file itself.\n"
+                "Choose a different backup file.",
+            )
+            return
+
+        # Validate first so we can show errors before the scary dialog
+        try:
+            validate_backup(backup_path)
+        except BackupError as exc:
+            QMessageBox.critical(self, "Invalid backup", str(exc))
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Confirm Restore",
+            f"This will REPLACE all current data with the backup:\n"
+            f"{backup_path}\n\n"
+            "A safety copy of the current database will be created first.\n\n"
+            "The application will close after restoring. "
+            "Relaunch to use the restored data.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            safety = restore_backup(
+                backup_path,
+                self.db_path,
+                live_conn=self.context.db.conn,
+            )
+            QMessageBox.information(
+                self,
+                "Restore complete",
+                f"Database restored from:\n{backup_path}\n\n"
+                f"Safety copy saved at:\n{safety}\n\n"
+                "The application will now close.",
+            )
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().quit()
+        except BackupError as exc:
+            QMessageBox.critical(self, "Restore failed", str(exc))
 
     def import_spreadsheet(self) -> None:
         filename, _filter = QFileDialog.getOpenFileName(

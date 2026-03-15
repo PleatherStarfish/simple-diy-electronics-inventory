@@ -30,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create example containers for a quick first run",
     )
+    parser.add_argument(
+        "--export-backup",
+        metavar="PATH",
+        help="Export a full database backup to PATH and exit",
+    )
+    parser.add_argument(
+        "--restore-backup",
+        metavar="PATH",
+        help="Restore the database from a backup file at PATH and exit",
+    )
     return parser
 
 
@@ -41,9 +51,39 @@ def main(argv: list[str] | None = None) -> int:
         db_path = Path(args.db).expanduser().resolve()
     else:
         db_path = AppPaths.default().db_path
+
+    # ── Headless restore (before building full app context) ──
+    if args.restore_backup:
+        from eurorack_inventory.services.backup import BackupError, restore_backup
+
+        backup_file = Path(args.restore_backup).expanduser().resolve()
+        try:
+            safety = restore_backup(backup_file, db_path)
+            print(f"Restored backup from {backup_file}")
+            print(f"Safety copy of previous database: {safety}")
+            return 0
+        except BackupError as exc:
+            print(f"Restore failed: {exc}")
+            return 1
+
     context = build_app_context(db_path)
 
     try:
+        # ── Headless export ──
+        if args.export_backup:
+            from eurorack_inventory.services.backup import BackupError, export_backup
+
+            dest = Path(args.export_backup).expanduser().resolve()
+            if dest == db_path.resolve():
+                print("Export failed: target path is the same as the live database.")
+                return 1
+            try:
+                result = export_backup(context.db.conn, dest)
+                print(f"Backup exported to {result}")
+                return 0
+            except BackupError as exc:
+                print(f"Export failed: {exc}")
+                return 1
         if args.bootstrap_demo_storage:
             context.storage_service.bootstrap_demo_storage()
 
