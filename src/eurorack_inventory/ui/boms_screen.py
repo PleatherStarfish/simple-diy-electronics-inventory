@@ -57,11 +57,6 @@ class BomsScreen(QWidget):
 
         self.import_pdf_btn = QPushButton("Import PDF...")
         self.import_pdf_btn.clicked.connect(self._import_pdf)
-        if not check_pdf_available():
-            self.import_pdf_btn.setEnabled(False)
-            self.import_pdf_btn.setToolTip(
-                "Requires Java: brew install openjdk"
-            )
 
         self.import_dir_btn = QPushButton("Import Directory...")
         self.import_dir_btn.clicked.connect(self._import_dir)
@@ -349,6 +344,15 @@ class BomsScreen(QWidget):
         self._run_import([Path(p) for p in paths], "csv")
 
     def _import_pdf(self) -> None:
+        if not check_pdf_available():
+            QMessageBox.warning(
+                self,
+                "Java Required",
+                "PDF import requires Java, which is not installed or was blocked by macOS.\n\n"
+                "Install it with Homebrew:\n"
+                "    brew install openjdk",
+            )
+            return
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import BOM PDFs", "", "PDF Files (*.pdf *.PDF)"
         )
