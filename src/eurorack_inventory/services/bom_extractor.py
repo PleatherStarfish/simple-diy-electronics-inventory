@@ -17,6 +17,48 @@ from eurorack_inventory.domain.models import RawBomItem
 logger = logging.getLogger(__name__)
 
 
+def _ensure_java_on_path() -> bool:
+    """Find a working java binary and ensure it is on PATH for tabula-py.
+
+    Returns True if java is available, False otherwise.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("java"):
+        return True
+
+    # Common Homebrew and system locations to search
+    search_dirs = [
+        "/usr/local/opt/openjdk/bin",
+        "/opt/homebrew/opt/openjdk/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+    ]
+    # Also try /usr/libexec/java_home which finds any installed JDK
+    try:
+        result = subprocess.run(
+            ["/usr/libexec/java_home"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            java_home = result.stdout.strip()
+            if java_home:
+                search_dirs.insert(0, f"{java_home}/bin")
+    except Exception:
+        pass
+
+    for bin_dir in search_dirs:
+        java_path = Path(bin_dir) / "java"
+        if java_path.is_file():
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+            return True
+    return False
+
+
 def check_pdf_available() -> bool:
     """Check if tabula-py and Java are available for PDF extraction."""
     try:
@@ -26,6 +68,8 @@ def check_pdf_available() -> bool:
     try:
         import subprocess
 
+        if not _ensure_java_on_path():
+            return False
         result = subprocess.run(
             ["java", "-version"],
             capture_output=True,
