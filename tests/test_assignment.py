@@ -8,7 +8,7 @@ from eurorack_inventory.domain.enums import CellLength, CellSize, StorageClass
 from eurorack_inventory.repositories.audit import AuditRepository
 from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
-from eurorack_inventory.services.assignment import AssignmentPlan, AssignmentScope, AssignmentService
+from eurorack_inventory.services.assignment import AssignmentPlan, AssignmentScope, AssignmentService, StorageEstimate
 from eurorack_inventory.services.inventory import InventoryService
 from eurorack_inventory.services.settings import SettingsRepository
 from eurorack_inventory.services.storage import StorageService
@@ -55,6 +55,25 @@ class TestIncrementalAssignment:
         parts = _create_parts(inventory_svc, [
             ("100R 0805", "Resistors", "loose", 10),
             ("220R 0805", "Resistors", "loose", 10),
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+
+        assert result.assigned_count == 2
+        assert result.unassigned_count == 0
+
+        for p in parts:
+            updated = part_repo.get_part_by_id(p.id)
+            assert updated.slot_id is not None
+
+    def test_assigns_package_only_0805_parts_to_small_cells(self, ctx):
+        assignment_svc, storage_svc, inventory_svc, part_repo, _, _ = ctx
+
+        storage_svc.configure_grid_box(name="Box 1", rows=1, cols=2)
+
+        parts = _create_parts(inventory_svc, [
+            ("100R", "Resistors", "SMD 0805", 10),
+            ("220R", "Resistors", "0805", 10),
         ])
 
         result = assignment_svc.assign("incremental", AssignmentScope())
@@ -118,6 +137,30 @@ class TestIncrementalAssignment:
         result = assignment_svc.assign("incremental", AssignmentScope())
         assert result.assigned_count == 0
         assert result.unassigned_count == 0
+
+    def test_assigns_wide_grid_boxes_in_coordinate_order(self, ctx):
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Wide Box", rows=2, cols=15)
+        _create_parts(inventory_svc, [
+            (f"R{i} 0805", "Resistors", "loose", 10)
+            for i in range(5)
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+
+        assert result.assigned_count == 5
+
+        assigned_labels = []
+        for part_id, slot_id in result.assignments:
+            part = part_repo.get_part_by_id(part_id)
+            assert part is not None
+            slot = storage_repo.get_slot(slot_id)
+            assert slot is not None
+            assert slot.container_id == container.id
+            assigned_labels.append(slot.label)
+
+        assert assigned_labels == ["A0", "A1", "A2", "A3", "A4"]
 
 
 class TestFullRebuildAssignment:
@@ -727,3 +770,328 @@ class TestScopedFullRebuild:
         restored, conflicts = assignment_svc.undo_run(run_id)
         assert restored == 0
         assert conflicts == []
+
+
+# ──────────────────────────────────────────────────────────
+# Compatibility matrix & fallback placement
+# ──────────────────────────────────────────────────────────
+
+
+class TestFallbackPlacement:
+    def test_small_part_falls_back_to_large_cell(self, ctx):
+        """Small passive with no small cells but a large cell → placed in large cell."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+
+        p = inventory_svc.upsert_part(name="100nF 0805", category="Capacitors", qty=10)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 1
+
+        updated = part_repo.get_part_by_id(p.id)
+        assert updated.slot_id == slots[0].id
+
+    def test_binder_part_falls_back_to_small_cell(self, ctx):
+        """IC with no binder cards but small cells → placed in small cell."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, _, _ = ctx
+
+        storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+
+        p = inventory_svc.upsert_part(name="TL072 SOIC-8", category="ICs", qty=2)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 1
+
+        updated = part_repo.get_part_by_id(p.id)
+        assert updated.slot_id is not None
+
+    def test_binder_part_forbidden_from_large_cell(self, ctx):
+        """IC with only large cells → unassigned (large cell is forbidden)."""
+        assignment_svc, storage_svc, inventory_svc, _, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+
+        inventory_svc.upsert_part(name="TL072 SOIC-8", category="ICs", qty=2)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 0
+        assert result.unassigned_count == 1
+
+    def test_large_part_forbidden_from_small_cell(self, ctx):
+        """Large part with only small cells → unassigned."""
+        assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
+
+        storage_svc.configure_grid_box(name="Box 1", rows=2, cols=2)
+
+        inventory_svc.upsert_part(name="Toggle Switch", category="Switches", qty=5)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 0
+        assert result.unassigned_count == 1
+
+    def test_long_part_falls_back_to_large_cell(self, ctx):
+        """Through-hole resistor with no long cells but large cell → placed there."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+
+        p = inventory_svc.upsert_part(name="10K 1/4W", category="Resistors", qty=50)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 1
+
+        updated = part_repo.get_part_by_id(p.id)
+        assert updated.slot_id == slots[0].id
+
+
+# ──────────────────────────────────────────────────────────
+# Binder card capacity
+# ──────────────────────────────────────────────────────────
+
+
+class TestBinderCardCapacity:
+    def test_multiple_parts_per_card(self, ctx):
+        """3 ICs with 1 binder card (4 bags) → all 3 assigned to same card."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, _, _ = ctx
+
+        storage_svc.configure_binder(name="Binder 1", num_cards=1, bags_per_card=4)
+
+        parts = _create_parts(inventory_svc, [
+            ("TL072 SOIC-8", "ICs", None, 3),
+            ("LM358 SOIC-8", "ICs", None, 2),
+            ("NE555 SOIC-8", "ICs", None, 1),
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 3
+        assert result.unassigned_count == 0
+
+        # All should be on the same card
+        slot_ids = {part_repo.get_part_by_id(p.id).slot_id for p in parts}
+        assert len(slot_ids) == 1
+
+    def test_overflow_at_bag_count(self, ctx):
+        """5 ICs with 1 card (4 bags) → 4 assigned, 1 unassigned."""
+        assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
+
+        storage_svc.configure_binder(name="Binder 1", num_cards=1, bags_per_card=4)
+
+        _create_parts(inventory_svc, [
+            ("TL072 SOIC-8", "ICs", None, 1),
+            ("LM358 SOIC-8", "ICs", None, 1),
+            ("NE555 SOIC-8", "ICs", None, 1),
+            ("LM741 SOIC-8", "ICs", None, 1),
+            ("LM324 SOIC-8", "ICs", None, 1),
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 4
+        assert result.unassigned_count == 1
+
+    def test_spreads_across_cards(self, ctx):
+        """5 ICs with 2 cards (2 bags each) → all 4 fit, 1 unassigned."""
+        assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
+
+        storage_svc.configure_binder(name="Binder 1", num_cards=2, bags_per_card=2)
+
+        _create_parts(inventory_svc, [
+            ("TL072 SOIC-8", "ICs", None, 1),
+            ("LM358 SOIC-8", "ICs", None, 1),
+            ("NE555 SOIC-8", "ICs", None, 1),
+            ("LM741 SOIC-8", "ICs", None, 1),
+            ("LM324 SOIC-8", "ICs", None, 1),
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 4
+        assert result.unassigned_count == 1
+
+
+# ──────────────────────────────────────────────────────────
+# Scarcity ordering
+# ──────────────────────────────────────────────────────────
+
+
+class TestScarcityOrdering:
+    def test_constrained_part_gets_its_slot(self, ctx):
+        """A large part (only fits large cells) and a small part (fits large or small)
+        with 1 large cell and 1 small cell → large part gets large cell, small gets small."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=2)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+        # slots[1] stays small/short
+
+        p_switch = inventory_svc.upsert_part(name="Toggle Switch", category="Switches", qty=5)
+        p_cap = inventory_svc.upsert_part(name="100nF 0805", category="Capacitors", qty=10)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 2
+
+        # Switch (LARGE_CELL, more constrained) should get the large cell
+        switch_updated = part_repo.get_part_by_id(p_switch.id)
+        assert switch_updated.slot_id == slots[0].id
+
+        # Cap (SMALL_SHORT_CELL, flexible) should get the small cell
+        cap_updated = part_repo.get_part_by_id(p_cap.id)
+        assert cap_updated.slot_id == slots[1].id
+
+
+# ──────────────────────────────────────────────────────────
+# Unassigned reasons
+# ──────────────────────────────────────────────────────────
+
+
+class TestUnassignedReasons:
+    def test_reason_no_compatible_slot(self, ctx):
+        """Binder part with only large cells → reason explains no compatible type."""
+        assignment_svc, storage_svc, inventory_svc, _, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+
+        p = inventory_svc.upsert_part(name="TL072 SOIC-8", category="ICs", qty=2)
+
+        plan = assignment_svc.plan("incremental", AssignmentScope())
+        assert p.id in plan.unassigned_part_ids
+        assert plan.reason_for(p.id) == "no compatible slot type exists"
+
+    def test_reason_all_full(self, ctx):
+        """2 small parts, 1 small cell → second part gets 'all compatible slots are full'."""
+        assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
+
+        storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+
+        p1 = inventory_svc.upsert_part(name="100nF 0805", category="Capacitors", qty=10)
+        p2 = inventory_svc.upsert_part(name="10nF 0805", category="Capacitors", qty=10)
+
+        plan = assignment_svc.plan("incremental", AssignmentScope())
+        assert len(plan.unassigned_part_ids) == 1
+        unassigned_id = plan.unassigned_part_ids[0]
+        assert plan.reason_for(unassigned_id) == "all compatible slots are full"
+
+    def test_reason_for_returns_unknown_for_assigned(self, ctx):
+        """reason_for() returns 'unknown' for parts not in unassigned_reasons."""
+        plan = AssignmentPlan(
+            assignments=((1, 10),),
+            unassigned_part_ids=(),
+            estimate=StorageEstimate(),
+        )
+        assert plan.reason_for(1) == "unknown"
+
+
+# ──────────────────────────────────────────────────────────
+# Full rebuild: no churn penalty → optimal placement
+# ──────────────────────────────────────────────────────────
+
+
+class TestFullRebuildOptimalPlacement:
+    def test_full_rebuild_ignores_churn_for_better_fit(self, ctx):
+        """Full rebuild should place parts optimally even when they already have slots.
+
+        Place a switch in a small cell and a capacitor in a large cell (sub-optimal).
+        Full rebuild should swap them: switch → large, capacitor → small.
+        """
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=2)
+        slots = storage_repo.list_slots_for_container(container.id)
+        # slots[0] = large, slots[1] = small
+        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+
+        # Deliberately place parts sub-optimally
+        p_switch = inventory_svc.upsert_part(
+            name="Toggle Switch", category="Switches", qty=5, slot_id=slots[1].id,
+        )
+        p_cap = inventory_svc.upsert_part(
+            name="100nF 0805", category="Capacitors", qty=10, slot_id=slots[0].id,
+        )
+
+        result = assignment_svc.assign("full_rebuild", AssignmentScope())
+        assert result.assigned_count == 2
+
+        # After rebuild: switch should be in large cell, cap in small cell
+        switch_updated = part_repo.get_part_by_id(p_switch.id)
+        cap_updated = part_repo.get_part_by_id(p_cap.id)
+        assert switch_updated.slot_id == slots[0].id  # large cell
+        assert cap_updated.slot_id == slots[1].id  # small cell
+
+
+# ──────────────────────────────────────────────────────────
+# Count-based category affinity
+# ──────────────────────────────────────────────────────────
+
+
+class TestCountBasedCategoryAffinity:
+    def test_majority_container_wins(self, ctx):
+        """Category affinity should track the container with the most parts.
+
+        If 3 resistors go to Box A and 1 is forced to Box B, subsequent
+        resistors should prefer Box A (majority).
+        """
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        # Box A: 3 long cells
+        container_a = storage_svc.configure_grid_box(name="Box A", rows=1, cols=3)
+        for s in storage_repo.list_slots_for_container(container_a.id):
+            storage_svc.update_cell_properties(slot_id=s.id, cell_length="long")
+
+        # Box B: 2 long cells
+        container_b = storage_svc.configure_grid_box(name="Box B", rows=1, cols=2)
+        for s in storage_repo.list_slots_for_container(container_b.id):
+            storage_svc.update_cell_properties(slot_id=s.id, cell_length="long")
+
+        # Create 5 through-hole resistors
+        parts = _create_parts(inventory_svc, [
+            (f"R{i} 1/4W", "Resistors", "cut_tape", 10)
+            for i in range(5)
+        ])
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 5
+
+        # Count how many went to each container
+        container_ids = []
+        for p in parts:
+            updated = part_repo.get_part_by_id(p.id)
+            slot = storage_repo.get_slot(updated.slot_id)
+            container_ids.append(slot.container_id)
+
+        # All should be grouped — Box A has 3 slots, so 3 go there; Box B gets 2
+        from collections import Counter
+        counts = Counter(container_ids)
+        assert counts[container_a.id] == 3
+        assert counts[container_b.id] == 2
+
+
+# ──────────────────────────────────────────────────────────
+# Deterministic ordering
+# ──────────────────────────────────────────────────────────
+
+
+class TestDeterministicOrdering:
+    def test_same_scarcity_produces_deterministic_result(self, ctx):
+        """Parts with identical scarcity should produce the same assignments every time."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, _, _ = ctx
+
+        storage_svc.configure_grid_box(name="Box 1", rows=2, cols=3)
+
+        _create_parts(inventory_svc, [
+            ("100nF 0805", "Capacitors", "loose", 10),
+            ("10nF 0805", "Capacitors", "loose", 10),
+            ("1uF 0805", "Capacitors", "loose", 10),
+        ])
+
+        plan1 = assignment_svc.plan("incremental", AssignmentScope())
+        plan2 = assignment_svc.plan("incremental", AssignmentScope())
+
+        assert plan1.assignments == plan2.assignments

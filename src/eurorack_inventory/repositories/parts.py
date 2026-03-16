@@ -254,12 +254,35 @@ class PartRepository:
         )
         return [row["category"] for row in rows]
 
+    def list_distinct_packages(self) -> list[str]:
+        rows = self.db.query_all(
+            "SELECT DISTINCT default_package FROM parts WHERE default_package IS NOT NULL ORDER BY default_package"
+        )
+        return [row["default_package"] for row in rows]
+
+    def count_bom_references(self, part_id: int) -> int:
+        """Count how many bom_lines reference this part."""
+        return int(
+            self.db.scalar(
+                "SELECT COUNT(*) FROM bom_lines WHERE part_id = ?", (part_id,)
+            )
+            or 0
+        )
+
     def list_occupied_slot_ids(self) -> set[int]:
         """Return set of slot_ids that have at least one part assigned."""
         rows = self.db.query_all(
             "SELECT DISTINCT slot_id FROM parts WHERE slot_id IS NOT NULL"
         )
         return {row["slot_id"] for row in rows}
+
+    def count_parts_per_slot(self) -> dict[int, int]:
+        """Return {slot_id: count} for all occupied slots."""
+        rows = self.db.query_all(
+            "SELECT slot_id, COUNT(*) AS cnt FROM parts "
+            "WHERE slot_id IS NOT NULL GROUP BY slot_id"
+        )
+        return {row["slot_id"]: row["cnt"] for row in rows}
 
     def bulk_clear_slot_ids(self, part_ids: list[int]) -> None:
         """Set slot_id = NULL for the given parts."""

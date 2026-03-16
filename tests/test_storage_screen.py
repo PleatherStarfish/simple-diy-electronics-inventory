@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from eurorack_inventory.app import build_app_context
 from eurorack_inventory.domain.enums import CellLength, CellSize
+from eurorack_inventory.services.assignment import AssignmentScope
 from eurorack_inventory.ui.storage_screen import (
     DeleteContainerDialog,
     StorageScreen,
@@ -173,6 +174,27 @@ def test_new_grid_box_context_menu_works(qapp, ui_context) -> None:
     )
     updated = ui_context.storage_repo.get_slot(slot.id)
     assert updated.metadata["cell_size"] == CellSize.LARGE.value
+
+    screen.close()
+
+
+def test_refresh_reloads_current_container_after_assignment(qapp, ui_context) -> None:
+    container = ui_context.storage_service.configure_grid_box(name="Refresh Grid", rows=2, cols=2)
+    ui_context.inventory_service.upsert_part(name="100R 0805", category="Resistors", qty=10)
+
+    screen = StorageScreen(ui_context)
+    screen.load_container(container.id)
+
+    before = screen.grid_table.item(0, 0)
+    assert before is not None
+    assert "100R 0805" not in before.text()
+
+    ui_context.assignment_service.assign("incremental", AssignmentScope())
+    screen.refresh()
+
+    after = screen.grid_table.item(0, 0)
+    assert after is not None
+    assert "100R 0805" in after.text()
 
     screen.close()
 

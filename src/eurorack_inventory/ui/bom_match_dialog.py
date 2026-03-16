@@ -153,8 +153,8 @@ class BomMatchDialog(QDialog):
         dialog = PartDialog(self)
         # Pre-fill from BOM item
         dialog.name_edit.setText(self.item.normalized_value)
-        dialog.category_edit.setText(self.item.component_type or "")
-        dialog.package_edit.setText(self.item.package_hint or "")
+        dialog.category_combo.setCurrentText(self.item.component_type or "")
+        dialog.package_combo.setCurrentText(self.item.package_hint or "")
         dialog.qty_spin.setValue(0)
         dialog.qty_spin.setEnabled(False)
         if self.item.tayda_pn:

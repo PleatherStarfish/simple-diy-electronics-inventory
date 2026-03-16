@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from eurorack_inventory.app import AppContext
 from eurorack_inventory.ui.assignment_dialog import AssignmentDialog
+from eurorack_inventory.ui.dedup_dialog import DedupDialog
 from eurorack_inventory.ui.boms_screen import BomsScreen
 from eurorack_inventory.ui.inventory_screen import InventoryScreen
 from eurorack_inventory.ui.projects_screen import ProjectsScreen
@@ -130,6 +131,11 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self.open_settings_dialog)
         tools_menu.addAction(settings_action)
 
+        dedup_action = QAction("Find &Duplicates...", self)
+        dedup_action.setToolTip("Find and merge likely duplicate parts")
+        dedup_action.triggered.connect(self._open_dedup_dialog)
+        tools_menu.addAction(dedup_action)
+
         tools_menu.addSeparator()
 
         refresh_action = QAction("Re&fresh", self)
@@ -209,6 +215,11 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+
+    def _open_dedup_dialog(self) -> None:
+        DedupDialog(self.context, parent=self).exec()
+        self.context.search_service.rebuild()
+        self.refresh_all()
 
     def _on_find_in_storage(self, slot_id: int) -> None:
         self.tabs.setCurrentWidget(self.storage_screen)

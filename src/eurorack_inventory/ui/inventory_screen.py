@@ -301,9 +301,15 @@ class InventoryScreen(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Quantity update failed", str(exc))
 
+    def _part_dialog_options(self) -> dict:
+        return {
+            "slots": self._get_slot_choices(),
+            "categories": self.context.part_repo.list_distinct_categories(),
+            "packages": self.context.part_repo.list_distinct_packages(),
+        }
+
     def _new_part(self) -> None:
-        slots = self._get_slot_choices()
-        dialog = PartDialog(self, slots=slots)
+        dialog = PartDialog(self, **self._part_dialog_options())
         if dialog.exec() != PartDialog.DialogCode.Accepted:
             return
         fields = dialog.get_fields()
@@ -341,8 +347,7 @@ class InventoryScreen(QWidget):
         part = self.context.part_repo.get_part_by_id(self.current_part_id)
         if part is None:
             return
-        slots = self._get_slot_choices()
-        dialog = PartDialog(self, part=part, slots=slots)
+        dialog = PartDialog(self, part=part, **self._part_dialog_options())
         if dialog.exec() != PartDialog.DialogCode.Accepted:
             return
         fields = dialog.get_fields()

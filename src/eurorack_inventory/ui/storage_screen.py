@@ -502,7 +502,18 @@ class StorageScreen(QWidget):
         self.container_model.update_rows(containers)
         self._refresh_utilization()
 
-        if containers and self.current_container_id is None:
+        if not containers:
+            self.current_container_id = None
+            return
+
+        if self.current_container_id is None:
+            self.load_container(containers[0].id)
+            return
+
+        current_ids = {container.id for container in containers}
+        if self.current_container_id in current_ids:
+            self.load_container(self.current_container_id)
+        else:
             self.load_container(containers[0].id)
 
     def _refresh_utilization(self) -> None:

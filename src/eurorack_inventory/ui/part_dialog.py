@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -32,19 +34,21 @@ class PartDialog(QDialog):
         *,
         part: Part | None = None,
         slots: list[tuple[int, str]] | None = None,
+        categories: list[str] | None = None,
+        packages: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Part" if part else "New Part")
         self.setMinimumWidth(450)
 
         self.name_edit = QLineEdit()
-        self.category_edit = QLineEdit()
+        self.category_combo = self._make_searchable_combo(categories or [])
         self.manufacturer_edit = QLineEdit()
         self.mpn_edit = QLineEdit()
         self.supplier_name_edit = QLineEdit()
         self.supplier_sku_edit = QLineEdit()
         self.purchase_url_edit = QLineEdit()
-        self.package_edit = QLineEdit()
+        self.package_combo = self._make_searchable_combo(packages or [])
         self.qty_spin = QSpinBox()
         self.qty_spin.setRange(0, 999_999)
         self.location_combo = QComboBox()
@@ -63,13 +67,13 @@ class PartDialog(QDialog):
         # Pre-fill for edit mode
         if part is not None:
             self.name_edit.setText(part.name)
-            self.category_edit.setText(part.category or "")
+            self.category_combo.setCurrentText(part.category or "")
             self.manufacturer_edit.setText(part.manufacturer or "")
             self.mpn_edit.setText(part.mpn or "")
             self.supplier_name_edit.setText(part.supplier_name or "")
             self.supplier_sku_edit.setText(part.supplier_sku or "")
             self.purchase_url_edit.setText(part.purchase_url or "")
-            self.package_edit.setText(part.default_package or "")
+            self.package_combo.setCurrentText(part.default_package or "")
             self.qty_spin.setValue(part.qty)
             self.notes_edit.setPlainText(part.notes or "")
             if part.storage_class_override:
@@ -83,13 +87,13 @@ class PartDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Name *", self.name_edit)
-        form.addRow("Category", self.category_edit)
+        form.addRow("Category", self.category_combo)
         form.addRow("Manufacturer", self.manufacturer_edit)
         form.addRow("MPN", self.mpn_edit)
         form.addRow("Supplier", self.supplier_name_edit)
         form.addRow("Supplier SKU", self.supplier_sku_edit)
         form.addRow("Purchase URL", self.purchase_url_edit)
-        form.addRow("Package", self.package_edit)
+        form.addRow("Package", self.package_combo)
         form.addRow("Quantity", self.qty_spin)
         form.addRow("Storage Type", self.storage_type_combo)
         form.addRow("Location", self.location_combo)
@@ -105,6 +109,17 @@ class PartDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
+    @staticmethod
+    def _make_searchable_combo(items: list[str]) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.addItem("")
+        combo.addItems(items)
+        combo.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        combo.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        return combo
+
     def _validate_and_accept(self) -> None:
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, "Validation", "Name is required.")
@@ -115,13 +130,13 @@ class PartDialog(QDialog):
         """Return the field values entered by the user."""
         return {
             "name": self.name_edit.text().strip(),
-            "category": self.category_edit.text().strip() or None,
+            "category": self.category_combo.currentText().strip() or None,
             "manufacturer": self.manufacturer_edit.text().strip() or None,
             "mpn": self.mpn_edit.text().strip() or None,
             "supplier_name": self.supplier_name_edit.text().strip() or None,
             "supplier_sku": self.supplier_sku_edit.text().strip() or None,
             "purchase_url": self.purchase_url_edit.text().strip() or None,
-            "default_package": self.package_edit.text().strip() or None,
+            "default_package": self.package_combo.currentText().strip() or None,
             "qty": self.qty_spin.value(),
             "storage_class_override": self.storage_type_combo.currentData(),
             "slot_id": self.location_combo.currentData(),

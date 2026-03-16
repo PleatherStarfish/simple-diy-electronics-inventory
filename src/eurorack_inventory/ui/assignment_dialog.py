@@ -242,6 +242,15 @@ class AssignmentDialog(QDialog):
             lines.append("")
 
         if plan.unassigned_part_ids:
+            lines.append("Unassigned parts:")
+            for pid in plan.unassigned_part_ids[:20]:
+                p = self.part_repo.get_part_by_id(pid) if self.part_repo else None
+                reason = plan.reason_for(pid)
+                name = p.name if p else f"#{pid}"
+                lines.append(f"  {name}: {reason}")
+            if len(plan.unassigned_part_ids) > 20:
+                lines.append(f"  ... and {len(plan.unassigned_part_ids) - 20} more")
+            lines.append("")
             lines.append("Additional storage needed:")
             lines.append(f"  Small cells: {plan.estimate.small_short_cells_needed}")
             lines.append(f"  Large cells: {plan.estimate.large_cells_needed}")

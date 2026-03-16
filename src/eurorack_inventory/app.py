@@ -21,6 +21,7 @@ from eurorack_inventory.services.assignment import AssignmentService
 from eurorack_inventory.services.bom import BomService
 from eurorack_inventory.services.bom_matching import BomMatchingService
 from eurorack_inventory.services.settings import SettingsRepository
+from eurorack_inventory.services.dedup import DedupService
 from eurorack_inventory.services.storage import StorageService
 
 
@@ -42,6 +43,7 @@ class AppContext:
     assignment_service: AssignmentService
     bom_repo: BomRepository
     bom_service: BomService
+    dedup_service: DedupService
 
 
 def build_app_context(db_path: Path) -> AppContext:
@@ -69,6 +71,7 @@ def build_app_context(db_path: Path) -> AppContext:
     bom_matching_service = BomMatchingService(search_service, part_repo)
     bom_service = BomService(bom_repo, part_repo, bom_matching_service, audit_repo)
 
+    dedup_service = DedupService(db, part_repo, audit_repo, search_service)
     dashboard_service = DashboardService(part_repo, storage_repo, project_repo, audit_repo, bom_repo)
 
     storage_service.ensure_default_unassigned_slot()
@@ -91,4 +94,5 @@ def build_app_context(db_path: Path) -> AppContext:
         assignment_service=assignment_service,
         bom_repo=bom_repo,
         bom_service=bom_service,
+        dedup_service=dedup_service,
     )

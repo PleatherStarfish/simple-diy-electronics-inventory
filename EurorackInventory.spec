@@ -48,7 +48,7 @@ app = BUNDLE(
     icon='src/eurorack_inventory/resources/AppIcon.icns',
     bundle_identifier='com.danielmiller.simple-diy-electronics-inventory',
     info_plist={
-        'CFBundleShortVersionString': '0.1.0',
+        'CFBundleShortVersionString': '0.2.0',
         'CFBundleName': 'Simple DIY Electronics Inventory',
         'CFBundleDisplayName': 'Simple DIY Electronics Inventory',
         'NSHighResolutionCapable': True,

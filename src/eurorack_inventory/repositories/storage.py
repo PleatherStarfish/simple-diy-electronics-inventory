@@ -33,6 +33,13 @@ def _row_to_slot(row) -> StorageSlot:
     )
 
 
+def _slot_sort_key(slot: StorageSlot) -> tuple[int, int, int, int, int, str]:
+    """Sort grid slots by coordinates, then fall back to ordinal/label for other slot types."""
+    if None not in (slot.y1, slot.x1, slot.y2, slot.x2):
+        return (slot.y1, slot.x1, slot.y2, slot.x2, slot.ordinal or 0, slot.label)
+    return (999999, 999999, 999999, 999999, slot.ordinal or 999999, slot.label)
+
+
 class StorageRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -110,11 +117,11 @@ class StorageRepository:
             """
             SELECT * FROM storage_slots
             WHERE container_id = ?
-            ORDER BY COALESCE(ordinal, 999999), label
+            ORDER BY id
             """,
             (container_id,),
         )
-        return [_row_to_slot(row) for row in rows]
+        return sorted((_row_to_slot(row) for row in rows), key=_slot_sort_key)
 
     def update_slot(self, slot: StorageSlot) -> StorageSlot:
         self.db.execute(
