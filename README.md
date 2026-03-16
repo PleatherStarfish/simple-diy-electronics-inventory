@@ -259,7 +259,7 @@ Import behavior today:
 1. Download the latest `.dmg` from [GitHub Releases](https://github.com/danielmiller/simple-diy-electronics-inventory/releases).
 2. Drag **Simple DIY Electronics Inventory** into `Applications`.
 3. Launch it from `Applications`.
-4. On first launch, macOS may require `right-click -> Open` because the app is ad-hoc signed.
+4. Signed releases should open normally. If you are testing an older ad-hoc build, macOS may require `right-click -> Open` or `Privacy & Security -> Open Anyway`.
 
 ### From source
 
@@ -406,7 +406,9 @@ The script currently:
 
 - removes `build/` and `dist/`
 - runs PyInstaller with `EurorackInventory.spec`
-- applies ad-hoc code signing to `dist/Simple DIY Electronics Inventory.app`
+- applies ad-hoc code signing by default for local builds
+- signs with a Developer ID identity when `APPLE_SIGNING_IDENTITY` is set
+- notarizes and staples the DMG when `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD` are set
 - optionally creates `dist/Simple DIY Electronics Inventory.dmg` if `create-dmg` is installed
 
 If needed:
@@ -414,6 +416,19 @@ If needed:
 ```bash
 brew install create-dmg
 ```
+
+### Notarized GitHub releases
+
+To publish a macOS release that opens without Gatekeeper warnings, configure these GitHub Actions secrets:
+
+- `MACOS_CERTIFICATE_P12_BASE64`: Base64-encoded Developer ID Application certificate export
+- `MACOS_CERTIFICATE_PASSWORD`: Password for that `.p12`
+- `APPLE_SIGNING_IDENTITY`: Full signing identity, for example `Developer ID Application: Your Name (TEAMID)`
+- `APPLE_ID`: Apple ID email used for notarization
+- `APPLE_TEAM_ID`: Apple Developer team ID
+- `APPLE_APP_PASSWORD`: App-specific password for notarization
+
+Without those secrets, local builds will still work for development, but downloaded apps will be blocked by macOS Gatekeeper.
 
 ## Running tests
 
