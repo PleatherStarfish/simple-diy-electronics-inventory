@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install '.[dev]'
+          pip install '.[dev,bom-pdf]'
 
       - name: Install create-dmg
         run: brew install create-dmg
