@@ -59,7 +59,9 @@ class BomsScreen(QWidget):
         self.import_pdf_btn.clicked.connect(self._import_pdf)
         if not check_pdf_available():
             self.import_pdf_btn.setEnabled(False)
-            self.import_pdf_btn.setToolTip("Requires tabula-py and Java")
+            self.import_pdf_btn.setToolTip(
+                "Requires Java: brew install openjdk"
+            )
 
         self.import_dir_btn = QPushButton("Import Directory...")
         self.import_dir_btn.clicked.connect(self._import_dir)

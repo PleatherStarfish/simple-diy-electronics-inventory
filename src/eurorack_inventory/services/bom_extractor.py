@@ -21,9 +21,18 @@ def check_pdf_available() -> bool:
     """Check if tabula-py and Java are available for PDF extraction."""
     try:
         import tabula  # noqa: F401
-
-        return True
     except ImportError:
+        return False
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["java", "-version"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
         return False
 
 
