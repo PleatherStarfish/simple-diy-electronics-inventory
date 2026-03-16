@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -11,7 +13,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
-    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -20,237 +21,374 @@ from PySide6.QtWidgets import (
 )
 
 from eurorack_inventory.app import AppContext
+from eurorack_inventory.domain.part_signature import ReviewPriority
 from eurorack_inventory.services.dedup import DuplicatePair
 
 
+# Only non-empty fields are shown in the comparison.
 _COMPARISON_FIELDS = [
     ("Name", "name"),
     ("Category", "category"),
-    ("Quantity", "qty"),
+    ("Qty", "qty"),
     ("Package", "default_package"),
-    ("Supplier SKU", "supplier_sku"),
+    ("SKU", "supplier_sku"),
     ("Manufacturer", "manufacturer"),
     ("MPN", "mpn"),
     ("Supplier", "supplier_name"),
-    ("Purchase URL", "purchase_url"),
+    ("URL", "purchase_url"),
     ("Storage Class", "storage_class_override"),
-    ("Location", None),       # special: from get_part_location
-    ("Aliases", None),        # special: count
-    ("BOM References", None), # special: count
+    ("Location", None),
+    ("Aliases", None),
+    ("BOM Refs", None),
     ("Created", "created_at"),
     ("Notes", "notes"),
 ]
 
+# Subtle tints that sit well on the #FFFFFF table surface.
+_GREEN = QColor("#EBF5EB")
+_AMBER = QColor("#FFF8E1")
+_RED = QColor("#FEECEC")
+_GRAY_DIFF = QColor("#F5F5FA")
+
+# Map conflict rules to the comparison labels they highlight.
+_CONFLICT_FIELD_MAP: dict[str, list[str]] = {
+    "resistor_value_differs": ["Name"],
+    "capacitor_value_differs": ["Name"],
+    "connector_pin_count_differs": ["Name"],
+    "connector_pitch_differs": ["Name"],
+    "connector_subtype_differs": ["Name"],
+    "dip_socket_pin_count_differs": ["Name"],
+    "pot_value_differs": ["Name"],
+    "switch_function_differs": ["Name"],
+    "package_technology_differs": ["Package"],
+    "semiconductor_base_device_differs": ["Name", "MPN"],
+    "component_family_differs": ["Category"],
+    "disjoint_tayda_sku": ["SKU"],
+    "different_manufacturer": ["Manufacturer"],
+    "packing_suffix_differs": ["MPN"],
+    "generic_vs_specific": ["Package", "Name"],
+    "different_tolerance": ["Name"],
+    "different_voltage_rating": ["Name"],
+}
+
+# ── Inline button styles matching the app's accent blue ───────────────────
+
+_BTN_PRIMARY = """
+    QPushButton {
+        background-color: #0071E3; color: #FFFFFF; border: none;
+        border-radius: 6px; padding: 6px 20px; font-weight: 600; min-height: 22px;
+    }
+    QPushButton:hover   { background-color: #005BB5; }
+    QPushButton:pressed { background-color: #004A94; }
+    QPushButton:disabled { background-color: #B0D4F1; color: #FFFFFF; }
+"""
+
+_BTN_OUTLINE_RED = """
+    QPushButton {
+        background-color: #FFFFFF; color: #C62828;
+        border: 1px solid #E0E0E0; border-radius: 6px;
+        padding: 6px 14px; min-height: 22px;
+    }
+    QPushButton:hover { background-color: #FFEBEE; border-color: #C62828; }
+    QPushButton:disabled { color: #BDBDBD; border-color: #EEEEEE; }
+"""
+
+
+def _thin_rule() -> QFrame:
+    """A 1 px horizontal separator."""
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.HLine)
+    f.setStyleSheet("color: #E5E5EA;")
+    f.setFixedHeight(1)
+    return f
+
+
+# ── Dialog ────────────────────────────────────────────────────────────────
 
 class DedupDialog(QDialog):
     def __init__(self, context: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.context = context
-        self.setWindowTitle("Find & Merge Duplicates")
-        self.setMinimumSize(850, 550)
+        self.setWindowTitle("Duplicates")
+        self.setMinimumSize(920, 560)
         self._pairs: list[DuplicatePair] = []
         self._current_pair: DuplicatePair | None = None
 
-        # ── Top bar ──
-        top_bar = QHBoxLayout()
-        top_bar.addWidget(QLabel("Threshold:"))
-        self._threshold_spin = QSpinBox()
-        self._threshold_spin.setRange(50, 100)
-        self._threshold_spin.setValue(75)
-        top_bar.addWidget(self._threshold_spin)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
 
-        self._scan_btn = QPushButton("Scan for Duplicates")
-        self._scan_btn.clicked.connect(self._do_scan)
-        top_bar.addWidget(self._scan_btn)
-
+        # ── Header row ──
+        hdr = QHBoxLayout()
+        hdr.setSpacing(10)
+        title = QLabel("Find & Merge Duplicates")
+        tf = QFont()
+        tf.setPointSize(15)
+        tf.setWeight(QFont.Weight.DemiBold)
+        title.setFont(tf)
+        hdr.addWidget(title)
+        hdr.addStretch()
         self._count_label = QLabel("")
-        top_bar.addStretch()
-        top_bar.addWidget(self._count_label)
+        self._count_label.setStyleSheet("color: #6E6E73; font-size: 12px;")
+        hdr.addWidget(self._count_label)
+        self._scan_btn = QPushButton("Scan")
+        self._scan_btn.setStyleSheet(_BTN_PRIMARY)
+        self._scan_btn.setFixedWidth(72)
+        self._scan_btn.clicked.connect(self._do_scan)
+        hdr.addWidget(self._scan_btn)
+        root.addLayout(hdr)
 
-        # ── Pair list (left) ──
+        # ── Splitter ──
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(1)
+
+        # Left — pair list
         self._pair_list = QListWidget()
+        self._pair_list.setMinimumWidth(200)
+        self._pair_list.setMaximumWidth(300)
         self._pair_list.currentItemChanged.connect(self._on_pair_selected)
+        splitter.addWidget(self._pair_list)
 
-        # ── Detail panel (right) ──
+        # Right — detail
         detail = QWidget()
-        detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
+        dl = QVBoxLayout(detail)
+        dl.setContentsMargins(12, 0, 0, 0)
+        dl.setSpacing(8)
 
+        # Chips line (reasons / warnings)
+        self._chips_label = QLabel("")
+        self._chips_label.setWordWrap(True)
+        self._chips_label.setStyleSheet("font-size: 11px; color: #6E6E73;")
+        dl.addWidget(self._chips_label)
+
+        # Comparison table
         self._comparison_table = QTableWidget()
         self._comparison_table.setColumnCount(3)
-        self._comparison_table.setHorizontalHeaderLabels(["Field", "Part A", "Part B"])
+        self._comparison_table.setHorizontalHeaderLabels(["", "Part A", "Part B"])
         self._comparison_table.horizontalHeader().setStretchLastSection(True)
+        self._comparison_table.verticalHeader().setVisible(False)
         self._comparison_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._comparison_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        detail_layout.addWidget(self._comparison_table)
+        self._comparison_table.setShowGrid(False)
+        self._comparison_table.setAlternatingRowColors(False)
+        self._comparison_table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #E0E0E0; border-radius: 6px;
+                background-color: #FFFFFF;
+            }
+            QTableWidget::item { padding: 4px 8px; }
+            QHeaderView::section {
+                background-color: #FAFAFA; border: none;
+                border-bottom: 1px solid #E0E0E0;
+                padding: 5px 8px; font-weight: 600;
+                font-size: 11px; color: #6E6E73;
+            }
+        """)
+        dl.addWidget(self._comparison_table)
 
-        # Keep radio buttons
+        # Keep radios
         keep_row = QHBoxLayout()
+        keep_row.setSpacing(14)
+        kl = QLabel("Keep:")
+        kl.setStyleSheet("font-weight: 600; color: #3A3A3C;")
         self._keep_group = QButtonGroup(self)
-        self._keep_a_radio = QRadioButton("Keep Part A")
-        self._keep_b_radio = QRadioButton("Keep Part B")
+        self._keep_a_radio = QRadioButton("Part A")
+        self._keep_b_radio = QRadioButton("Part B")
         self._keep_a_radio.setChecked(True)
         self._keep_group.addButton(self._keep_a_radio, 0)
         self._keep_group.addButton(self._keep_b_radio, 1)
+        keep_row.addWidget(kl)
         keep_row.addWidget(self._keep_a_radio)
         keep_row.addWidget(self._keep_b_radio)
         keep_row.addStretch()
-        detail_layout.addLayout(keep_row)
+        dl.addLayout(keep_row)
 
-        # Slot conflict resolution
-        self._slot_row = QHBoxLayout()
-        self._slot_label = QLabel("Location:")
+        # Slot conflict (hidden by default)
+        self._slot_container = QWidget()
+        sc = QVBoxLayout(self._slot_container)
+        sc.setContentsMargins(0, 0, 0, 0)
+        sc.setSpacing(4)
+        self._slot_warning = QLabel("Both parts are in different locations.")
+        self._slot_warning.setStyleSheet("color: #E65100; font-size: 12px;")
+        sc.addWidget(self._slot_warning)
+        sr = QHBoxLayout()
+        sr.setSpacing(12)
+        sl = QLabel("Keep location:")
+        sl.setStyleSheet("font-weight: 600; color: #3A3A3C;")
         self._slot_group = QButtonGroup(self)
-        self._slot_a_radio = QRadioButton("Slot A")
-        self._slot_b_radio = QRadioButton("Slot B")
+        self._slot_a_radio = QRadioButton("A")
+        self._slot_b_radio = QRadioButton("B")
         self._slot_a_radio.setChecked(True)
         self._slot_group.addButton(self._slot_a_radio, 0)
         self._slot_group.addButton(self._slot_b_radio, 1)
-        self._slot_warning = QLabel("Both parts are stored in different locations — choose which to keep.")
-        self._slot_warning.setStyleSheet("color: #B25000; font-weight: bold;")
-        self._slot_row.addWidget(self._slot_label)
-        self._slot_row.addWidget(self._slot_a_radio)
-        self._slot_row.addWidget(self._slot_b_radio)
-        self._slot_row.addStretch()
-
-        self._slot_container = QWidget()
-        slot_vlayout = QVBoxLayout(self._slot_container)
-        slot_vlayout.setContentsMargins(0, 0, 0, 0)
-        slot_vlayout.addWidget(self._slot_warning)
-        slot_vlayout.addLayout(self._slot_row)
+        sr.addWidget(sl)
+        sr.addWidget(self._slot_a_radio)
+        sr.addWidget(self._slot_b_radio)
+        sr.addStretch()
+        sc.addLayout(sr)
         self._slot_container.setVisible(False)
-        detail_layout.addWidget(self._slot_container)
+        dl.addWidget(self._slot_container)
 
-        # Status label
-        self._status_label = QLabel("")
-        detail_layout.addWidget(self._status_label)
+        dl.addWidget(_thin_rule())
 
         # Action buttons
-        btn_row = QHBoxLayout()
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
         self._merge_btn = QPushButton("Merge")
+        self._merge_btn.setStyleSheet(_BTN_PRIMARY)
         self._merge_btn.clicked.connect(self._do_merge)
         self._merge_btn.setEnabled(False)
+        self._not_dup_btn = QPushButton("Not a Duplicate")
+        self._not_dup_btn.setStyleSheet(_BTN_OUTLINE_RED)
+        self._not_dup_btn.clicked.connect(self._mark_not_duplicate)
+        self._not_dup_btn.setEnabled(False)
+        self._not_dup_btn.setToolTip("Permanently dismiss this pair")
         self._skip_btn = QPushButton("Skip")
         self._skip_btn.clicked.connect(self._skip_pair)
         self._skip_btn.setEnabled(False)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self._merge_btn)
-        btn_row.addWidget(self._skip_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-        detail_layout.addLayout(btn_row)
+        btns.addWidget(self._merge_btn)
+        btns.addWidget(self._not_dup_btn)
+        btns.addWidget(self._skip_btn)
+        btns.addStretch()
+        btns.addWidget(close_btn)
+        dl.addLayout(btns)
 
-        # ── Splitter ──
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._pair_list)
         splitter.addWidget(detail)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        root.addWidget(splitter)
 
-        # ── Main layout ──
-        layout = QVBoxLayout(self)
-        layout.addLayout(top_bar)
-        layout.addWidget(splitter)
+    # ── Scan ──────────────────────────────────────────────────────────────
 
     def _do_scan(self) -> None:
-        threshold = self._threshold_spin.value()
         self.context.search_service.rebuild()
-        self._pairs = self.context.dedup_service.find_duplicate_pairs(threshold)
+        self._pairs = self.context.dedup_service.find_duplicate_pairs()
         self._populate_pair_list()
 
     def _populate_pair_list(self) -> None:
         self._pair_list.clear()
         self._current_pair = None
         self._comparison_table.setRowCount(0)
-        self._merge_btn.setEnabled(False)
-        self._skip_btn.setEnabled(False)
+        self._set_actions(False)
         self._slot_container.setVisible(False)
+        self._chips_label.setText("")
 
         if not self._pairs:
             self._count_label.setText("No duplicates found")
-            self._status_label.setText("")
             return
 
-        self._count_label.setText(f"{len(self._pairs)} pair(s) found")
+        n = len(self._pairs)
+        self._count_label.setText(f"{n} pair{'s' if n != 1 else ''}")
+
         for pair in self._pairs:
-            label = f"score {pair.score:.0f}: {pair.part_a.name} vs {pair.part_b.name}"
-            item = QListWidgetItem(label)
+            # Two-line item: part A name / vs part B name
+            text = f"{pair.part_a.name}\nvs  {pair.part_b.name}"
+            item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, pair)
+            item.setSizeHint(QSize(0, 42))
             self._pair_list.addItem(item)
 
         self._pair_list.setCurrentRow(0)
 
+    # ── Selection ─────────────────────────────────────────────────────────
+
     def _on_pair_selected(self, current: QListWidgetItem | None, _prev) -> None:
         if current is None:
             self._current_pair = None
-            self._merge_btn.setEnabled(False)
-            self._skip_btn.setEnabled(False)
+            self._set_actions(False)
             return
-
         pair: DuplicatePair = current.data(Qt.ItemDataRole.UserRole)
         self._current_pair = pair
-        self._skip_btn.setEnabled(True)
         self._populate_comparison(pair)
         self._select_default_keep(pair)
+        self._set_actions(True)
 
     def _populate_comparison(self, pair: DuplicatePair) -> None:
         pa, pb = pair.part_a, pair.part_b
-        self._comparison_table.setRowCount(len(_COMPARISON_FIELDS))
 
         loc_a = self.context.part_repo.get_part_location(pa.id)
         loc_b = self.context.part_repo.get_part_location(pb.id)
-        alias_count_a = len(self.context.part_repo.list_aliases_for_part(pa.id))
-        alias_count_b = len(self.context.part_repo.list_aliases_for_part(pb.id))
-        bom_count_a = self.context.part_repo.count_bom_references(pa.id)
-        bom_count_b = self.context.part_repo.count_bom_references(pb.id)
+        alias_a = len(self.context.part_repo.list_aliases_for_part(pa.id))
+        alias_b = len(self.context.part_repo.list_aliases_for_part(pb.id))
+        bom_a = self.context.part_repo.count_bom_references(pa.id)
+        bom_b = self.context.part_repo.count_bom_references(pb.id)
 
-        for row, (label, attr) in enumerate(_COMPARISON_FIELDS):
-            self._comparison_table.setItem(row, 0, QTableWidgetItem(label))
+        # Conflict field sets
+        hard_fields: set[str] = set()
+        warn_fields: set[str] = set()
+        for r in pair.hard_rejects:
+            hard_fields.update(_CONFLICT_FIELD_MAP.get(r, []))
+        for w in pair.warnings:
+            warn_fields.update(_CONFLICT_FIELD_MAP.get(w, []))
+
+        # Build visible rows — skip fields empty on both sides
+        rows: list[tuple[str, str, str]] = []
+        for label, attr in _COMPARISON_FIELDS:
             if attr is not None:
-                val_a = str(getattr(pa, attr) or "")
-                val_b = str(getattr(pb, attr) or "")
+                va = str(getattr(pa, attr)) if getattr(pa, attr) is not None else ""
+                vb = str(getattr(pb, attr)) if getattr(pb, attr) is not None else ""
             elif label == "Location":
-                val_a, val_b = loc_a, loc_b
+                va, vb = loc_a or "", loc_b or ""
             elif label == "Aliases":
-                val_a, val_b = str(alias_count_a), str(alias_count_b)
-            elif label == "BOM References":
-                val_a, val_b = str(bom_count_a), str(bom_count_b)
+                va, vb = (str(alias_a) if alias_a else ""), (str(alias_b) if alias_b else "")
+            elif label == "BOM Refs":
+                va, vb = (str(bom_a) if bom_a else ""), (str(bom_b) if bom_b else "")
             else:
-                val_a = val_b = ""
+                va = vb = ""
+            if not va and not vb and label != "Name":
+                continue
+            rows.append((label, va, vb))
 
-            item_a = QTableWidgetItem(val_a)
-            item_b = QTableWidgetItem(val_b)
-            # Highlight differences
-            if val_a != val_b and val_a and val_b:
-                item_a.setBackground(Qt.GlobalColor.yellow)
-                item_b.setBackground(Qt.GlobalColor.yellow)
-            self._comparison_table.setItem(row, 1, item_a)
-            self._comparison_table.setItem(row, 2, item_b)
+        self._comparison_table.setRowCount(len(rows))
+        lbl_font = QFont()
+        lbl_font.setWeight(QFont.Weight.DemiBold)
+
+        for i, (label, va, vb) in enumerate(rows):
+            li = QTableWidgetItem(label)
+            li.setFont(lbl_font)
+            li.setForeground(QColor("#6E6E73"))
+            self._comparison_table.setItem(i, 0, li)
+
+            ia = QTableWidgetItem(va)
+            ib = QTableWidgetItem(vb)
+
+            if label in hard_fields:
+                ia.setBackground(_RED); ib.setBackground(_RED)
+            elif label in warn_fields:
+                ia.setBackground(_AMBER); ib.setBackground(_AMBER)
+            elif va and vb and va == vb:
+                ia.setBackground(_GREEN); ib.setBackground(_GREEN)
+            elif va and vb:
+                ia.setBackground(_GRAY_DIFF); ib.setBackground(_GRAY_DIFF)
+
+            self._comparison_table.setItem(i, 1, ia)
+            self._comparison_table.setItem(i, 2, ib)
 
         self._comparison_table.resizeColumnsToContents()
+        self._comparison_table.setColumnWidth(0, 85)
 
-        # Slot conflict UI
-        has_slot_conflict = (
-            pa.slot_id is not None
-            and pb.slot_id is not None
-            and pa.slot_id != pb.slot_id
-        )
-        self._slot_container.setVisible(has_slot_conflict)
-        if has_slot_conflict:
-            self._slot_a_radio.setText(loc_a or f"Slot #{pa.slot_id}")
-            self._slot_b_radio.setText(loc_b or f"Slot #{pb.slot_id}")
+        # Slot conflict
+        conflict = (pa.slot_id and pb.slot_id and pa.slot_id != pb.slot_id)
+        self._slot_container.setVisible(bool(conflict))
+        if conflict:
+            self._slot_a_radio.setText(loc_a or f"#{pa.slot_id}")
+            self._slot_b_radio.setText(loc_b or f"#{pb.slot_id}")
             self._slot_a_radio.setChecked(True)
 
-        self._merge_btn.setEnabled(True)
-        self._status_label.setText(f"Match reasons: {', '.join(pair.match_reasons)}")
+        # Chips
+        parts: list[str] = []
+        for r in pair.match_reasons:
+            parts.append(f'<span style="color:#2E7D32">{_humanize(r)}</span>')
+        for w in pair.warnings:
+            parts.append(f'<span style="color:#E65100">{_humanize(w)}</span>')
+        self._chips_label.setText(" \u00b7 ".join(parts) if parts else "")
 
     def _select_default_keep(self, pair: DuplicatePair) -> None:
         pa, pb = pair.part_a, pair.part_b
         bom_a = self.context.part_repo.count_bom_references(pa.id)
         bom_b = self.context.part_repo.count_bom_references(pb.id)
-
-        # Prefer: higher qty → more BOM refs → older created_at
         if pa.qty > pb.qty:
             self._keep_a_radio.setChecked(True)
         elif pb.qty > pa.qty:
@@ -264,66 +402,86 @@ class DedupDialog(QDialog):
         else:
             self._keep_b_radio.setChecked(True)
 
+    # ── Actions ───────────────────────────────────────────────────────────
+
     def _do_merge(self) -> None:
         pair = self._current_pair
         if pair is None:
             return
-
         keep_a = self._keep_a_radio.isChecked()
-        keep_part = pair.part_a if keep_a else pair.part_b
-        remove_part = pair.part_b if keep_a else pair.part_a
+        keep = pair.part_a if keep_a else pair.part_b
+        remove = pair.part_b if keep_a else pair.part_a
 
-        # Resolve slot conflict
-        keep_slot_id = None
-        has_slot_conflict = (
-            pair.part_a.slot_id is not None
-            and pair.part_b.slot_id is not None
-            and pair.part_a.slot_id != pair.part_b.slot_id
-        )
-        if has_slot_conflict:
-            keep_slot_id = (
-                pair.part_a.slot_id if self._slot_a_radio.isChecked() else pair.part_b.slot_id
-            )
+        slot_id = None
+        if pair.part_a.slot_id and pair.part_b.slot_id and pair.part_a.slot_id != pair.part_b.slot_id:
+            slot_id = pair.part_a.slot_id if self._slot_a_radio.isChecked() else pair.part_b.slot_id
 
         reply = QMessageBox.question(
-            self,
-            "Confirm Merge",
-            f"Keep \"{keep_part.name}\" (#{keep_part.id}) and remove "
-            f"\"{remove_part.name}\" (#{remove_part.id})?\n\n"
-            f"This will combine quantities, transfer aliases, and remap BOM references.",
+            self, "Confirm Merge",
+            f'Merge "{remove.name}" into "{keep.name}"?\n\n'
+            "Quantities, aliases, and BOM references will be combined.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-
         try:
-            result = self.context.dedup_service.merge_parts(
-                keep_part.id, remove_part.id, keep_slot_id=keep_slot_id,
+            self.context.dedup_service.merge_parts(
+                keep.id, remove.id, keep_slot_id=slot_id,
+                score=pair.score, reasons=pair.match_reasons,
+                sig_a=pair.sig_a, sig_b=pair.sig_b,
             )
         except ValueError as exc:
             QMessageBox.critical(self, "Merge Failed", str(exc))
             return
-
-        msg = f"Merged \"{remove_part.name}\" into \"{keep_part.name}\""
-        if result.discarded_slot_label:
-            msg += f"\nDiscarded location: {result.discarded_slot_label}"
-        self._status_label.setText(msg)
-
-        # Full rescan after merge
         self._do_scan()
 
+    def _mark_not_duplicate(self) -> None:
+        pair = self._current_pair
+        if pair is None:
+            return
+        self.context.dedup_feedback_repo.record_not_duplicate(
+            pair.part_a.id, pair.part_b.id,
+            pair.score, pair.match_reasons,
+            pair.sig_a, pair.sig_b,
+            pair.part_a.name, pair.part_b.name,
+        )
+        self._advance()
+
     def _skip_pair(self) -> None:
+        self._advance()
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _advance(self) -> None:
         row = self._pair_list.currentRow()
         if row < 0:
             return
         self._pair_list.takeItem(row)
-        if self._pair_list.count() > 0:
-            self._pair_list.setCurrentRow(min(row, self._pair_list.count() - 1))
+        n = self._pair_list.count()
+        if n > 0:
+            self._pair_list.setCurrentRow(min(row, n - 1))
+            self._count_label.setText(f"{n} pair{'s' if n != 1 else ''}")
         else:
             self._current_pair = None
             self._comparison_table.setRowCount(0)
-            self._merge_btn.setEnabled(False)
-            self._skip_btn.setEnabled(False)
+            self._set_actions(False)
             self._slot_container.setVisible(False)
-            self._count_label.setText("No more pairs")
+            self._chips_label.setText("")
+            self._count_label.setText("All done")
+
+    def _set_actions(self, on: bool) -> None:
+        self._merge_btn.setEnabled(on)
+        self._not_dup_btn.setEnabled(on)
+        self._skip_btn.setEnabled(on)
+
+
+def _humanize(s: str) -> str:
+    if ":" in s:
+        base, tail = s.rsplit(":", 1)
+        try:
+            float(tail)
+            return base.replace("_", " ")
+        except ValueError:
+            pass
+    return s.replace("_", " ")

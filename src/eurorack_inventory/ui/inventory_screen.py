@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -107,9 +108,57 @@ class _LocationDelegate(_SearchableComboDelegate):
             editor.setCurrentIndex(0)
 
 
+class _MergeDropTableView(QTableView):
+    """QTableView that supports dragging one row onto another to trigger a merge."""
+
+    merge_requested = Signal(int, int)  # (drag_part_id, drop_part_id)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QTableView.DragDropMode.InternalMove)
+        self.setDropIndicatorShown(True)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat(InventoryTableModel.MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasFormat(InventoryTableModel.MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        if not mime.hasFormat(InventoryTableModel.MIME_TYPE):
+            super().dropEvent(event)
+            return
+
+        drag_id = int(bytes(mime.data(InventoryTableModel.MIME_TYPE)).decode())
+        drop_index = self.indexAt(event.position().toPoint())
+        if not drop_index.isValid():
+            event.ignore()
+            return
+
+        model = self.model()
+        drop_id = model.part_id_at(drop_index.row())
+        if drop_id is None or drop_id == drag_id:
+            event.ignore()
+            return
+
+        event.acceptProposedAction()
+        self.merge_requested.emit(drag_id, drop_id)
+
+
 class InventoryScreen(QWidget):
     inventory_changed = Signal()
     find_in_storage_requested = Signal(int)  # slot_id
+    merge_requested = Signal(int, int)  # (part_id_a, part_id_b) — drag-drop merge
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
@@ -121,7 +170,7 @@ class InventoryScreen(QWidget):
         self.search_edit.textChanged.connect(self.refresh_inventory)
 
         self.inventory_model = InventoryTableModel([])
-        self.inventory_table = QTableView()
+        self.inventory_table = _MergeDropTableView()
         self.inventory_table.setModel(self.inventory_model)
         self.inventory_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.inventory_table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
@@ -129,6 +178,7 @@ class InventoryScreen(QWidget):
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
         self.inventory_table.verticalHeader().setVisible(False)
         self.inventory_table.clicked.connect(self._on_inventory_clicked)
+        self.inventory_table.merge_requested.connect(self._on_merge_drop)
         self.inventory_model.cell_edited.connect(self._on_cell_edited)
         self.inventory_table.setItemDelegateForColumn(1, _CategoryDelegate(context, self.inventory_table))
         self.inventory_table.setItemDelegateForColumn(3, _PackageDelegate(context, self.inventory_table))
@@ -452,6 +502,9 @@ class InventoryScreen(QWidget):
             self.refresh_current_detail()
         except Exception as exc:
             QMessageBox.critical(self, "Save notes failed", str(exc))
+
+    def _on_merge_drop(self, drag_id: int, drop_id: int) -> None:
+        self.merge_requested.emit(drag_id, drop_id)
 
     def _find_in_storage(self) -> None:
         if self.current_part_id is None:

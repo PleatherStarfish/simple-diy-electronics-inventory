@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from eurorack_inventory.app import AppContext
 from eurorack_inventory.ui.assignment_dialog import AssignmentDialog
 from eurorack_inventory.ui.dedup_dialog import DedupDialog
+from eurorack_inventory.ui.manual_merge_dialog import ManualMergeDialog
 from eurorack_inventory.ui.boms_screen import BomsScreen
 from eurorack_inventory.ui.inventory_screen import InventoryScreen
 from eurorack_inventory.ui.projects_screen import ProjectsScreen
@@ -47,8 +48,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.boms_screen, "BOMs")
         self.setCentralWidget(self.tabs)
 
-        # Wire find-in-storage
+        # Wire cross-screen signals
         self.inventory_screen.find_in_storage_requested.connect(self._on_find_in_storage)
+        self.inventory_screen.merge_requested.connect(self._on_merge_drop)
 
         self._build_log_dock()
         self._build_audit_dock()
@@ -136,6 +138,11 @@ class MainWindow(QMainWindow):
         dedup_action.triggered.connect(self._open_dedup_dialog)
         tools_menu.addAction(dedup_action)
 
+        merge_action = QAction("&Manual Merge...", self)
+        merge_action.setToolTip("Pick any two parts and merge them directly")
+        merge_action.triggered.connect(self._open_manual_merge)
+        tools_menu.addAction(merge_action)
+
         tools_menu.addSeparator()
 
         refresh_action = QAction("Re&fresh", self)
@@ -220,6 +227,19 @@ class MainWindow(QMainWindow):
         DedupDialog(self.context, parent=self).exec()
         self.context.search_service.rebuild()
         self.refresh_all()
+
+    def _open_manual_merge(self) -> None:
+        selected = self.inventory_screen.selected_part_ids()
+        dialog = ManualMergeDialog(self.context, preselected=selected, parent=self)
+        if dialog.exec() == ManualMergeDialog.DialogCode.Accepted:
+            self.context.search_service.rebuild()
+            self.refresh_all()
+
+    def _on_merge_drop(self, part_id_a: int, part_id_b: int) -> None:
+        dialog = ManualMergeDialog(self.context, preselected=[part_id_a, part_id_b], parent=self)
+        if dialog.exec() == ManualMergeDialog.DialogCode.Accepted:
+            self.context.search_service.rebuild()
+            self.refresh_all()
 
     def _on_find_in_storage(self, slot_id: int) -> None:
         self.tabs.setCurrentWidget(self.storage_screen)

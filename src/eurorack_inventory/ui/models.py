@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QAbstractTableModel, QMimeData, QModelIndex, Qt, Signal
 
 from eurorack_inventory.domain.models import InventorySummary, StorageContainer, StorageSlot
 from eurorack_inventory.repositories.audit import AuditRepository
@@ -35,11 +35,33 @@ class InventoryTableModel(QAbstractTableModel):
             return self.HEADERS[section]
         return None
 
+    MIME_TYPE = "application/x-inventory-part-id"
+
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         base = super().flags(index)
-        if index.isValid() and index.column() in self._EDITABLE_COLUMNS:
-            return base | Qt.ItemFlag.ItemIsEditable
+        if index.isValid():
+            base |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+            if index.column() in self._EDITABLE_COLUMNS:
+                base |= Qt.ItemFlag.ItemIsEditable
+        else:
+            base |= Qt.ItemFlag.ItemIsDropEnabled
         return base
+
+    def supportedDropActions(self) -> Qt.DropAction:
+        return Qt.DropAction.MoveAction
+
+    def mimeTypes(self) -> list[str]:
+        return [self.MIME_TYPE]
+
+    def mimeData(self, indexes: list[QModelIndex]) -> QMimeData:
+        mime = QMimeData()
+        rows = {idx.row() for idx in indexes if idx.isValid()}
+        if rows:
+            row = min(rows)
+            pid = self.part_id_at(row)
+            if pid is not None:
+                mime.setData(self.MIME_TYPE, str(pid).encode())
+        return mime
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
         if not index.isValid():

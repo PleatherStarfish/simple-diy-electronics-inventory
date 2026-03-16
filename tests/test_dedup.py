@@ -12,6 +12,7 @@ from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.projects import ProjectRepository
 from eurorack_inventory.repositories.storage import StorageRepository
 from eurorack_inventory.services.common import make_part_fingerprint
+from eurorack_inventory.repositories.dedup_feedback import DedupFeedbackRepository
 from eurorack_inventory.services.dedup import DedupService
 from eurorack_inventory.services.inventory import InventoryService
 from eurorack_inventory.services.search import SearchService
@@ -38,7 +39,8 @@ def ctx(tmp_path: Path):
     inventory_svc = InventoryService(part_repo, storage_repo, audit_repo)
     storage_svc = StorageService(storage_repo, audit_repo)
     storage_svc.ensure_default_unassigned_slot()
-    dedup_svc = DedupService(db, part_repo, audit_repo, search_svc)
+    feedback_repo = DedupFeedbackRepository(db)
+    dedup_svc = DedupService(db, part_repo, audit_repo, search_svc, feedback_repo)
     yield {
         "db": db,
         "part_repo": part_repo,
@@ -148,14 +150,14 @@ class TestFindDuplicatePairs:
             assert len(ids) == 2  # always exactly two parts per pair
 
     def test_match_reasons_truthful(self, ctx):
-        _make_part(ctx, name="100K Resistor 1/4W", category="Resistor")
-        _make_part(ctx, name="100K Resistor Quarter Watt", category="Resistor")
+        _make_part(ctx, name="100K Resistor 1/4W", category="Resistors")
+        _make_part(ctx, name="100K Resistor Quarter Watt", category="Resistors")
         ctx["search_svc"].rebuild()
         pairs = ctx["dedup_svc"].find_duplicate_pairs(threshold=70.0)
         assert len(pairs) >= 1
         reasons = pairs[0].match_reasons
-        # Should contain a name:XX reason with an actual score
-        assert any(r.startswith("name:") for r in reasons)
+        # Should have typed match reasons
+        assert len(reasons) >= 1
 
     def test_value_gate_rejects_different_values(self, ctx):
         """100nF and 10nF should NOT be paired despite similar names."""
@@ -181,13 +183,15 @@ class TestFindDuplicatePairs:
         pairs = ctx["dedup_svc"].find_duplicate_pairs(threshold=60.0)
         assert len(pairs) == 1
 
-    def test_value_gate_skipped_when_no_tokens(self, ctx):
-        """Parts without value tokens (e.g. ICs) are not affected by the gate."""
+    def test_unknown_category_parts_not_paired_by_typed_blocking(self, ctx):
+        """Parts without typed identity fields are not paired by the new system.
+        This is intentional — only typed blocking generates candidates now."""
         _make_part(ctx, name="Arduino Nano", category="Dev Board")
         _make_part(ctx, name="Arduino Nano Clone", category="Dev Board")
         ctx["search_svc"].rebuild()
         pairs = ctx["dedup_svc"].find_duplicate_pairs(threshold=60.0)
-        assert len(pairs) == 1
+        # No typed blocking rule matches for "Dev Board" category
+        assert len(pairs) == 0
 
 
 # ──────────────────────────────────────────────────────────

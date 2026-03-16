@@ -1,31 +1,23 @@
 from __future__ import annotations
 
-import itertools
 import logging
-import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
 from eurorack_inventory.db.connection import Database
 from eurorack_inventory.domain.models import Part
+from eurorack_inventory.domain.part_signature import PartSignature, ReviewPriority
 from eurorack_inventory.repositories.audit import AuditRepository
+from eurorack_inventory.repositories.dedup_feedback import DedupFeedbackRepository
 from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.services.common import make_part_fingerprint, normalize_text
+from eurorack_inventory.services.dedup_blocking import generate_candidates
+from eurorack_inventory.services.dedup_conflicts import check_conflicts
 from eurorack_inventory.services.search import SearchService
+from eurorack_inventory.services.signature_parser import SignatureParser
 
 logger = logging.getLogger(__name__)
-
-# Matches tokens like "100nf", "10k", "4.7uf", "0.25w" — a number followed
-# immediately by unit/prefix letters.  Used to reject fuzzy pairs where the
-# component values clearly differ (e.g. "100nF" vs "10nF").
-_VALUE_TOKEN_RE = re.compile(r"\d+\.?\d*[a-z]+")
-
-
-def _extract_value_tokens(normalized_name: str) -> set[str]:
-    """Extract component-value tokens from a normalized part name."""
-    return set(_VALUE_TOKEN_RE.findall(normalized_name))
 
 
 _MERGE_ADOPTABLE_FIELDS = (
@@ -46,6 +38,11 @@ class DuplicatePair:
     part_b: Part
     score: float
     match_reasons: list[str] = field(default_factory=list)
+    hard_rejects: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    priority: str = ReviewPriority.LOW
+    sig_a: PartSignature | None = None
+    sig_b: PartSignature | None = None
 
 
 @dataclass(slots=True)
@@ -66,132 +63,88 @@ class DedupService:
         part_repo: PartRepository,
         audit_repo: AuditRepository,
         search_service: SearchService,
+        feedback_repo: DedupFeedbackRepository | None = None,
     ) -> None:
         self.db = db
         self.part_repo = part_repo
         self.audit_repo = audit_repo
         self.search_service = search_service
+        self.feedback_repo = feedback_repo
+        self._parser = SignatureParser()
 
     # ------------------------------------------------------------------
     # Detection
     # ------------------------------------------------------------------
 
     def find_duplicate_pairs(self, threshold: float = 75.0) -> list[DuplicatePair]:
+        """Find duplicate pairs using typed signature pipeline.
+
+        The threshold parameter is kept for API compatibility but is no longer
+        the primary matching mechanism. Typed blocking rules now drive candidate
+        generation. The threshold is used only for within-bucket fuzzy fallback.
+        """
         parts = self.part_repo.list_parts()
-        parts_by_id = {p.id: p for p in parts}
+        parts_by_id = {p.id: p for p in parts if p.id is not None}
 
-        # Collect candidate pairs as {(min_id, max_id): (score, reasons)}
-        candidates: dict[tuple[int, int], tuple[float, list[str]]] = {}
+        # Step 1: Parse all signatures in memory
+        signatures: dict[int, PartSignature] = {}
+        for p in parts:
+            if p.id is not None:
+                signatures[p.id] = self._parser.parse(p)
 
-        def _add(id_a: int, id_b: int, score: float, reason: str) -> None:
-            key = (min(id_a, id_b), max(id_a, id_b))
-            existing_score, existing_reasons = candidates.get(key, (0.0, []))
-            if score > existing_score:
-                candidates[key] = (score, [reason])
-            elif score == existing_score:
-                existing_reasons.append(reason)
+        # Step 2: Load suppressed pairs from feedback
+        suppressed: set[tuple[int, int]] = set()
+        if self.feedback_repo:
+            suppressed = self.feedback_repo.list_suppressed_pairs()
 
-        # Phase 1: exact key matches
-        self._phase1_exact_keys(parts, _add)
+        # Step 3: Generate candidates via typed blocking
+        raw_candidates = generate_candidates(parts, signatures, suppressed)
 
-        # Phase 2: fuzzy name matching
-        self._phase2_fuzzy_names(parts, threshold, _add)
-
-        # Build result pairs
+        # Step 4: Filter through conflicts + score
         result: list[DuplicatePair] = []
-        for (id_a, id_b), (score, reasons) in candidates.items():
+        for id_a, id_b, block_reasons in raw_candidates:
             pa = parts_by_id.get(id_a)
             pb = parts_by_id.get(id_b)
-            if pa and pb:
-                result.append(DuplicatePair(part_a=pa, part_b=pb, score=score, match_reasons=reasons))
+            if not pa or not pb:
+                continue
 
-        result.sort(key=lambda p: -p.score)
+            sig_a = signatures.get(id_a)
+            sig_b = signatures.get(id_b)
+            if sig_a is None or sig_b is None:
+                continue
+
+            # Check hard rejects and warnings
+            hard_rejects, warnings = check_conflicts(pa, pb, sig_a, sig_b)
+
+            # Skip pairs with hard rejects
+            if hard_rejects:
+                continue
+
+            # Score the pair
+            priority, score, reasons = score_pair(
+                pa, pb, sig_a, sig_b, block_reasons,
+            )
+
+            result.append(DuplicatePair(
+                part_a=pa,
+                part_b=pb,
+                score=score,
+                match_reasons=reasons,
+                hard_rejects=hard_rejects,
+                warnings=warnings,
+                priority=priority,
+                sig_a=sig_a,
+                sig_b=sig_b,
+            ))
+
+        # Sort by priority tier then score
+        priority_order = {ReviewPriority.HIGH: 0, ReviewPriority.MEDIUM: 1, ReviewPriority.LOW: 2}
+        result.sort(key=lambda p: (priority_order.get(p.priority, 3), -p.score))
         return result
 
-    def _phase1_exact_keys(
-        self,
-        parts: list[Part],
-        add: Callable[[int, int, float, str], None],
-    ) -> None:
-        # Group by normalized supplier_sku
-        sku_groups: dict[str, list[int]] = {}
-        for p in parts:
-            norm_sku = normalize_text(p.supplier_sku)
-            if norm_sku:
-                sku_groups.setdefault(norm_sku, []).append(p.id)
-        for ids in sku_groups.values():
-            for a, b in itertools.combinations(ids, 2):
-                add(a, b, 100.0, "exact_sku")
-
-        # Group by (normalized mpn, normalized manufacturer)
-        mpn_groups: dict[tuple[str, str], list[int]] = {}
-        for p in parts:
-            norm_mpn = normalize_text(p.mpn)
-            norm_mfr = normalize_text(p.manufacturer)
-            if norm_mpn and norm_mfr:
-                mpn_groups.setdefault((norm_mpn, norm_mfr), []).append(p.id)
-        for ids in mpn_groups.values():
-            for a, b in itertools.combinations(ids, 2):
-                add(a, b, 100.0, "exact_mpn")
-
-    def _phase2_fuzzy_names(
-        self,
-        parts: list[Part],
-        threshold: float,
-        add: Callable[[int, int, float, str], None],
-    ) -> None:
-        names = [(p.id, p.normalized_name, p) for p in parts]
-        n = len(names)
-        for i in range(n):
-            id_a, name_a, part_a = names[i]
-            for j in range(i + 1, n):
-                id_b, name_b, part_b = names[j]
-                base_score = fuzz.WRatio(name_a, name_b)
-                if base_score < threshold:
-                    continue
-
-                # Category gate
-                if (
-                    part_a.category
-                    and part_b.category
-                    and normalize_text(part_a.category) != normalize_text(part_b.category)
-                ):
-                    continue
-
-                # Value gate: reject when both names contain value tokens
-                # but share none (e.g. "100nF" vs "10nF").
-                tokens_a = _extract_value_tokens(name_a)
-                tokens_b = _extract_value_tokens(name_b)
-                if tokens_a and tokens_b and not tokens_a & tokens_b:
-                    continue
-
-                # Enrich score
-                enriched = base_score
-                reasons = [f"name:{base_score:.0f}"]
-
-                if (
-                    part_a.supplier_sku
-                    and part_b.supplier_sku
-                    and normalize_text(part_a.supplier_sku) == normalize_text(part_b.supplier_sku)
-                ):
-                    enriched += 15
-                    reasons.append("sku_match")
-                if (
-                    part_a.default_package
-                    and part_b.default_package
-                    and normalize_text(part_a.default_package) == normalize_text(part_b.default_package)
-                ):
-                    enriched += 10
-                    reasons.append("package_match")
-                if (
-                    part_a.manufacturer
-                    and part_b.manufacturer
-                    and normalize_text(part_a.manufacturer) == normalize_text(part_b.manufacturer)
-                ):
-                    enriched += 5
-                    reasons.append("manufacturer_match")
-
-                add(id_a, id_b, enriched, ", ".join(reasons))
+    def get_signature(self, part: Part) -> PartSignature:
+        """Parse and return the signature for a single part."""
+        return self._parser.parse(part)
 
     # ------------------------------------------------------------------
     # Merge
@@ -202,6 +155,11 @@ class DedupService:
         keep_id: int,
         remove_id: int,
         keep_slot_id: int | None = None,
+        *,
+        score: float = 0.0,
+        reasons: list[str] | None = None,
+        sig_a: PartSignature | None = None,
+        sig_b: PartSignature | None = None,
     ) -> MergeResult:
         if keep_id == remove_id:
             raise ValueError("Cannot merge a part with itself")
@@ -213,6 +171,13 @@ class DedupService:
                 raise ValueError(f"Part #{keep_id} not found")
             if remove is None:
                 raise ValueError(f"Part #{remove_id} not found")
+
+            # Record merge feedback
+            if self.feedback_repo:
+                self.feedback_repo.record_merge(
+                    keep_id, remove_id, score, reasons or [],
+                    sig_a, sig_b, keep.name, remove.name,
+                )
 
             # 1. Sum quantities
             qty_before = keep.qty
@@ -350,3 +315,103 @@ class DedupService:
                 normalized_items_remapped=normalized_items_remapped,
                 discarded_slot_label=discarded_slot_label,
             )
+
+
+# ------------------------------------------------------------------
+# Scoring
+# ------------------------------------------------------------------
+
+def score_pair(
+    part_a: Part,
+    part_b: Part,
+    sig_a: PartSignature,
+    sig_b: PartSignature,
+    block_reasons: list[str],
+) -> tuple[str, float, list[str]]:
+    """Score a candidate pair and assign review priority.
+
+    Returns (priority, score, reasons).
+    """
+    score = 0.0
+    reasons: list[str] = []
+    warnings_count = 0
+
+    # Feature weights
+    if "exact_sku" in block_reasons:
+        score += 50
+        reasons.append("exact_sku")
+
+    if "exact_mpn" in block_reasons:
+        score += 50
+        reasons.append("exact_mpn")
+
+    if "same_base_device" in block_reasons:
+        if sig_a.package and sig_b.package and sig_a.package == sig_b.package:
+            score += 40
+            reasons.append("same_base_device_same_package")
+        else:
+            score += 30
+            reasons.append("same_base_device")
+
+    # Typed value match (resistor, capacitor, pot)
+    typed_value_match = False
+    if sig_a.value_ohms is not None and sig_b.value_ohms is not None:
+        if abs(sig_a.value_ohms - sig_b.value_ohms) / max(sig_a.value_ohms, sig_b.value_ohms) <= 0.01:
+            score += 30
+            reasons.append("typed_value_match")
+            typed_value_match = True
+    elif sig_a.value_pf is not None and sig_b.value_pf is not None:
+        if abs(sig_a.value_pf - sig_b.value_pf) / max(sig_a.value_pf, sig_b.value_pf) <= 0.01:
+            score += 30
+            reasons.append("typed_value_match")
+            typed_value_match = True
+
+    # Name fuzzy score (scaled 0-20)
+    name_ratio = fuzz.token_sort_ratio(
+        part_a.normalized_name, part_b.normalized_name,
+    )
+    name_score = name_ratio * 0.2  # scale 0-100 -> 0-20
+    score += name_score
+    if name_ratio >= 70:
+        reasons.append(f"name_similarity:{name_ratio:.0f}")
+
+    # Package match
+    if (
+        sig_a.package and sig_b.package
+        and sig_a.package == sig_b.package
+    ):
+        score += 10
+        reasons.append("package_match")
+
+    # Manufacturer match
+    if part_a.manufacturer and part_b.manufacturer:
+        if normalize_text(part_a.manufacturer) == normalize_text(part_b.manufacturer):
+            score += 5
+            reasons.append("manufacturer_match")
+
+    # Category match
+    if part_a.category and part_b.category:
+        if normalize_text(part_a.category) == normalize_text(part_b.category):
+            score += 5
+            reasons.append("category_match")
+
+    # Alias name match
+    # (Could check part aliases here for +15, but keeping simple for Phase 1)
+
+    # ── Assign priority ───────────────────────────────────────────────────
+    has_exact = "exact_sku" in block_reasons or "exact_mpn" in block_reasons
+    has_typed_identity = typed_value_match or "same_base_device" in block_reasons
+    has_multi_field_match = sum(1 for r in reasons if r not in ("category_match",)) >= 3
+
+    if has_exact:
+        priority = ReviewPriority.HIGH
+    elif has_typed_identity and has_multi_field_match:
+        priority = ReviewPriority.HIGH
+    elif has_typed_identity:
+        priority = ReviewPriority.MEDIUM
+    elif "fuzzy_name" in block_reasons:
+        priority = ReviewPriority.LOW
+    else:
+        priority = ReviewPriority.MEDIUM
+
+    return priority, score, reasons

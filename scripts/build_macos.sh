@@ -5,11 +5,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+elif [[ -x "${PROJECT_DIR}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+else
+    PYTHON_BIN="$(command -v python)"
+fi
+
 echo "==> Cleaning previous builds"
 rm -rf build dist
 
 echo "==> Running PyInstaller"
-python -m PyInstaller EurorackInventory.spec --noconfirm
+"${PYTHON_BIN}" -m PyInstaller EurorackInventory.spec --noconfirm
 
 echo "==> Ad-hoc code signing"
 codesign --force --deep --sign - "dist/Simple DIY Electronics Inventory.app"
