@@ -9,9 +9,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -74,13 +77,16 @@ class AssignmentDialog(QDialog):
         scope_layout.addWidget(self._radio_all)
         scope_layout.addWidget(self._radio_selected)
 
-        cat_row = QHBoxLayout()
-        cat_row.addWidget(self._radio_category)
-        self._category_combo = QComboBox()
-        self._category_combo.addItems(categories)
-        self._category_combo.setEnabled(False)
-        cat_row.addWidget(self._category_combo, 1)
-        scope_layout.addLayout(cat_row)
+        scope_layout.addWidget(self._radio_category)
+        self._category_list = QListWidget()
+        self._category_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for cat in categories:
+            item = QListWidgetItem(cat)
+            self._category_list.addItem(item)
+        self._category_list.setMaximumHeight(120)
+        self._category_list.setEnabled(False)
+        self._category_list.hide()
+        scope_layout.addWidget(self._category_list)
 
         # Part selection table (shown when "Selected parts" is active)
         self._part_table = QTableWidget()
@@ -98,14 +104,57 @@ class AssignmentDialog(QDialog):
         scope_layout.addWidget(self._part_table)
         scope_layout.addWidget(self._part_table_hint)
 
+        # Scope match count
+        self._scope_count_label = QLabel("")
+        self._scope_count_label.setWordWrap(True)
+        scope_layout.addWidget(self._scope_count_label)
+
         layout.addWidget(scope_box)
 
         self._scope_group.idToggled.connect(self._on_scope_changed)
         self._part_table.itemSelectionChanged.connect(self._on_part_selection_changed)
+        self._category_list.itemSelectionChanged.connect(self._update_scope_count)
 
-        # Populate part table
+        # Populate part table and cache parts for counting
+        self._all_parts: list = []
         self._part_ids_by_row: list[int] = []
         self._populate_part_table()
+
+        # Target container group
+        target_box = QGroupBox("Target Container")
+        target_layout = QVBoxLayout(target_box)
+
+        self._target_combo = QComboBox()
+        self._target_combo.addItem("Any (all containers)", userData=None)
+        if self.storage_repo:
+            for c in self.storage_repo.list_containers():
+                if c.name != "Unassigned":
+                    self._target_combo.addItem(c.name, userData=c.id)
+        target_layout.addWidget(self._target_combo)
+
+        # Soft quantity filter
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Prioritize parts with qty"))
+        self._qty_op_combo = QComboBox()
+        self._qty_op_combo.addItems(["<", "<=", ">", ">="])
+        self._qty_op_combo.setFixedWidth(60)
+        filter_row.addWidget(self._qty_op_combo)
+        self._qty_threshold_spin = QSpinBox()
+        self._qty_threshold_spin.setRange(0, 999999)
+        self._qty_threshold_spin.setValue(20)
+        filter_row.addWidget(self._qty_threshold_spin)
+        self._qty_filter_widget = QWidget()
+        self._qty_filter_widget.setLayout(filter_row)
+        self._qty_filter_widget.setEnabled(False)
+        self._qty_filter_widget.setToolTip(
+            "Parts matching this filter get first pick of slots in the target container.\n"
+            "Remaining slots are still filled by other parts."
+        )
+        target_layout.addWidget(self._qty_filter_widget)
+
+        layout.addWidget(target_box)
+
+        self._target_combo.currentIndexChanged.connect(self._on_target_changed)
 
         # Action buttons row
         btn_row = QHBoxLayout()
@@ -148,6 +197,7 @@ class AssignmentDialog(QDialog):
             return
 
         parts = self.part_repo.list_parts()
+        self._all_parts = parts
         self._part_ids_by_row.clear()
         self._part_table.setRowCount(len(parts))
 
@@ -186,6 +236,7 @@ class AssignmentDialog(QDialog):
             self._part_table.blockSignals(False)
 
         self._update_selected_label()
+        self._update_scope_count()
 
     def _get_selected_part_ids(self) -> list[int]:
         """Return part IDs for currently selected rows in the part table."""
@@ -203,19 +254,66 @@ class AssignmentDialog(QDialog):
 
     def _on_scope_changed(self, button_id: int, checked: bool) -> None:
         if checked:
-            self._category_combo.setEnabled(button_id == 2)
+            self._category_list.setEnabled(button_id == 2)
+            self._category_list.setVisible(button_id == 2)
             show_table = button_id == 1
             self._part_table.setVisible(show_table)
             self._part_table_hint.setVisible(show_table)
+            self._update_scope_count()
+
+    def _on_target_changed(self, index: int) -> None:
+        has_target = self._target_combo.currentData() is not None
+        self._qty_filter_widget.setEnabled(has_target)
+        # Full rebuild + specific target is dangerous — disable it
+        if has_target:
+            if self._radio_rebuild.isChecked():
+                self._radio_incremental.setChecked(True)
+            self._radio_rebuild.setEnabled(False)
+        else:
+            self._radio_rebuild.setEnabled(True)
 
     def _on_part_selection_changed(self) -> None:
         self._update_selected_label()
+        self._update_scope_count()
+
+    def _update_scope_count(self) -> None:
+        """Update the label showing how many parts match the current scope."""
+        scope_id = self._scope_group.checkedId()
+        if scope_id == 0:  # All parts
+            count = len(self._all_parts)
+        elif scope_id == 1:  # Selected parts
+            count = len(self._get_selected_part_ids())
+        elif scope_id == 2:  # By category
+            cats = {item.text().lower() for item in self._category_list.selectedItems()}
+            count = sum(1 for p in self._all_parts if (p.category or "").lower() in cats)
+        else:
+            count = 0
+        self._scope_count_label.setText(f"{count} parts match current scope")
+
+    def _validate_scope(self) -> bool:
+        """Check scope is valid. Shows a warning and returns False if not."""
+        scope_id = self._scope_group.checkedId()
+        if scope_id == 1 and not self._get_selected_part_ids():
+            QMessageBox.warning(
+                self, "No parts selected",
+                "Select at least one part in the table, or choose a different scope.",
+            )
+            return False
+        if scope_id == 2 and not self._category_list.selectedItems():
+            QMessageBox.warning(
+                self, "No categories selected",
+                "Select at least one category, or choose a different scope.",
+            )
+            return False
+        return True
 
     def _update_undo_state(self) -> None:
         latest = self.assignment_service.get_latest_run()
         self._undo_btn.setEnabled(latest is not None)
 
     def _preview_assignment(self) -> None:
+        if not self._validate_scope():
+            return
         mode = "full_rebuild" if self._radio_rebuild.isChecked() else "incremental"
         scope = self._build_scope()
         plan = self.assignment_service.plan(mode, scope)
@@ -265,6 +363,8 @@ class AssignmentDialog(QDialog):
         self._results_text.show()
 
     def _run_assignment(self) -> None:
+        if not self._validate_scope():
+            return
         mode = "full_rebuild" if self._radio_rebuild.isChecked() else "incremental"
 
         if mode == "full_rebuild":
@@ -337,16 +437,19 @@ class AssignmentDialog(QDialog):
         scope_id = self._scope_group.checkedId()
         if scope_id == 1:
             part_ids = self._get_selected_part_ids()
-            return AssignmentScope(
-                all_parts=False,
-                part_ids=part_ids,
-            )
-        if scope_id == 2:
-            cat = self._category_combo.currentText()
-            if not cat:
-                return AssignmentScope(all_parts=False, categories=[])
-            return AssignmentScope(
-                all_parts=False,
-                categories=[cat],
-            )
-        return AssignmentScope(all_parts=True)
+            scope = AssignmentScope(all_parts=False, part_ids=part_ids)
+        elif scope_id == 2:
+            cats = [item.text() for item in self._category_list.selectedItems()]
+            scope = AssignmentScope(all_parts=False, categories=cats)
+        else:
+            scope = AssignmentScope(all_parts=True)
+
+        # Target container
+        scope.target_container_id = self._target_combo.currentData()
+
+        # Soft quantity filter (only when a target container is selected)
+        if scope.target_container_id is not None:
+            scope.qty_filter_op = self._qty_op_combo.currentText()
+            scope.qty_filter_threshold = self._qty_threshold_spin.value()
+
+        return scope

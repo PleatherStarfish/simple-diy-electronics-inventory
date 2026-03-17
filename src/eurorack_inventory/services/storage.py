@@ -14,15 +14,22 @@ from eurorack_inventory.domain.storage import (
     regions_overlap,
 )
 from eurorack_inventory.repositories.audit import AuditRepository
+from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
 
 logger = logging.getLogger(__name__)
 
 
 class StorageService:
-    def __init__(self, storage_repo: StorageRepository, audit_repo: AuditRepository) -> None:
+    def __init__(
+        self,
+        storage_repo: StorageRepository,
+        audit_repo: AuditRepository,
+        part_repo: PartRepository | None = None,
+    ) -> None:
         self.storage_repo = storage_repo
         self.audit_repo = audit_repo
+        self.part_repo = part_repo
 
     def ensure_default_unassigned_slot(self) -> StorageSlot:
         container = self.storage_repo.get_container_by_name("Unassigned")
@@ -665,10 +672,15 @@ class StorageService:
 
         slots = self.storage_repo.list_slots_for_container(container_id)
         slot_ids = [s.id for s in slots]
-        if self._slots_have_stock(slot_ids):
-            raise ValueError(
-                "Cannot delete: some compartments still have parts assigned"
-            )
+
+        # Unassign any parts currently in this container's slots
+        unassigned_count = 0
+        if self.part_repo is not None and slot_ids:
+            parts_by_slot = self.part_repo.list_parts_by_slot_ids(slot_ids)
+            all_part_ids = [p.id for parts in parts_by_slot.values() for p in parts]
+            if all_part_ids:
+                self.part_repo.bulk_clear_slot_ids(all_part_ids)
+                unassigned_count = len(all_part_ids)
 
         for slot in slots:
             self.storage_repo.delete_slot(slot.id)
@@ -679,7 +691,11 @@ class StorageService:
             entity_type="container",
             entity_id=container_id,
             message=f"Deleted container {container.name!r}",
-            payload={"container_type": container.container_type, "slots_removed": len(slots)},
+            payload={
+                "container_type": container.container_type,
+                "slots_removed": len(slots),
+                "parts_unassigned": unassigned_count,
+            },
         )
 
     def _slots_have_stock(self, slot_ids: list[int]) -> bool:

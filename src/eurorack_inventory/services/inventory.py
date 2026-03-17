@@ -146,6 +146,20 @@ class InventoryService:
         location = self.part_repo.get_part_location(part_id)
         return PartDetail(part=part, aliases=aliases, location=location)
 
+    def unassign_parts(self, part_ids: list[int]) -> None:
+        """Clear slot assignment for the given parts, making them unassigned."""
+        if not part_ids:
+            return
+        self.part_repo.bulk_clear_slot_ids(part_ids)
+        for pid in part_ids:
+            self.audit_repo.add_event(
+                event_type="part.unassigned",
+                entity_type="part",
+                entity_id=pid,
+                message="Part unassigned from storage slot",
+                payload={},
+            )
+
     def reassign_part_slot(self, part_id: int, new_slot_id: int) -> Part:
         """Move a part to a different storage slot.
 

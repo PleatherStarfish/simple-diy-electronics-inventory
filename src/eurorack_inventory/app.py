@@ -61,7 +61,7 @@ def build_app_context(db_path: Path) -> AppContext:
     audit_repo = AuditRepository(db)
 
     inventory_service = InventoryService(part_repo, storage_repo, audit_repo)
-    storage_service = StorageService(storage_repo, audit_repo)
+    storage_service = StorageService(storage_repo, audit_repo, part_repo)
     project_service = ProjectService(project_repo, part_repo, audit_repo)
     search_service = SearchService(part_repo)
     import_service = SpreadsheetImportService(inventory_service, storage_service, audit_repo)

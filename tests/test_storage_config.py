@@ -22,7 +22,7 @@ def services(tmp_path: Path):
     storage_repo = StorageRepository(db)
     audit_repo = AuditRepository(db)
     part_repo = PartRepository(db)
-    storage_svc = StorageService(storage_repo, audit_repo)
+    storage_svc = StorageService(storage_repo, audit_repo, part_repo)
     inventory_svc = InventoryService(part_repo, storage_repo, audit_repo)
     yield storage_svc, inventory_svc, storage_repo, db
     db.close()
@@ -349,18 +349,25 @@ def test_delete_container_removes_container_and_slots(services) -> None:
     assert storage_repo.list_slots_for_container(container.id) == []
 
 
-def test_delete_container_blocked_by_stock(services) -> None:
-    storage_svc, inventory_svc, storage_repo, _ = services
+def test_delete_container_unassigns_parts(services) -> None:
+    storage_svc, inventory_svc, storage_repo, db = services
     container = storage_svc.configure_grid_box(name="Box DS", rows=2, cols=2)
 
     a0 = storage_repo.get_slot_by_label(container.id, "A0")
-    inventory_svc.upsert_part(name="cap", category="Caps", qty=1, slot_id=a0.id)
+    part = inventory_svc.upsert_part(name="cap", category="Caps", qty=1, slot_id=a0.id)
 
-    with pytest.raises(ValueError, match="parts assigned"):
-        storage_svc.delete_container(container.id)
+    storage_svc.delete_container(container.id)
 
-    # Container should still exist
-    assert storage_repo.get_container(container.id) is not None
+    # Container should be gone
+    assert storage_repo.get_container(container.id) is None
+
+    # Part should still exist but with no slot assignment
+    from eurorack_inventory.repositories.parts import PartRepository
+    part_repo = PartRepository(db)
+    updated = part_repo.get_part_by_id(part.id)
+    assert updated is not None
+    assert updated.slot_id is None
+    assert updated.qty == 1
 
 
 def test_delete_container_unknown_id(services) -> None:

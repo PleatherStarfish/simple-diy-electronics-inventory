@@ -317,7 +317,9 @@ class DeleteContainerDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             f"You are about to permanently delete <b>{container_name}</b> "
-            f"and all of its compartments.\n\nThis cannot be undone."
+            f"and all of its compartments.\n\n"
+            f"Any parts assigned to this container will become unassigned.\n\n"
+            f"This cannot be undone."
         ))
         layout.addWidget(QLabel(f"Type <b>{self._challenge}</b> to confirm:"))
 
@@ -1087,6 +1089,30 @@ class StorageScreen(QWidget):
             )
         menu.addAction(length_action)
 
+        # Unassign parts from this cell
+        parts = self._slot_parts.get(slot.id, [])
+        if parts:
+            menu.addSeparator()
+            if len(parts) == 1:
+                p = parts[0]
+                unassign_action = QAction(f"Unassign \"{p.name}\"", self)
+                unassign_action.triggered.connect(
+                    lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                )
+                menu.addAction(unassign_action)
+            else:
+                for p in parts:
+                    action = QAction(f"Unassign \"{p.name}\"", self)
+                    action.triggered.connect(
+                        lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                    )
+                    menu.addAction(action)
+                all_action = QAction(f"Unassign all ({len(parts)} parts)", self)
+                all_action.triggered.connect(
+                    lambda checked, ids=[p.id for p in parts]: self._unassign_parts(ids)
+                )
+                menu.addAction(all_action)
+
         menu.exec(global_pos)
 
     def _show_card_context_menu(self, slot: StorageSlot, global_pos) -> None:
@@ -1100,7 +1126,34 @@ class StorageScreen(QWidget):
                 lambda checked, c=count: self._set_card_bag_count(slot.id, c)
             )
             menu.addAction(action)
+
+        # Unassign parts from this card
+        parts = self._slot_parts.get(slot.id, [])
+        if parts:
+            menu.addSeparator()
+            for p in parts:
+                unassign_action = QAction(f"Unassign \"{p.name}\"", self)
+                unassign_action.triggered.connect(
+                    lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                )
+                menu.addAction(unassign_action)
+            if len(parts) > 1:
+                all_action = QAction(f"Unassign all ({len(parts)} parts)", self)
+                all_action.triggered.connect(
+                    lambda checked, ids=[p.id for p in parts]: self._unassign_parts(ids)
+                )
+                menu.addAction(all_action)
+
         menu.exec(global_pos)
+
+    def _unassign_parts(self, part_ids: list[int]) -> None:
+        try:
+            self.context.inventory_service.unassign_parts(part_ids)
+            if self.current_container_id is not None:
+                self.load_container(self.current_container_id)
+            self._refresh_utilization()
+        except Exception as exc:
+            QMessageBox.critical(self, "Unassign failed", str(exc))
 
     def _set_card_bag_count(self, slot_id: int, bag_count: int) -> None:
         try:

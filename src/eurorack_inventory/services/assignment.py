@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import operator as _operator
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -26,11 +27,22 @@ from eurorack_inventory.services.settings import ClassifierSettings, SettingsRep
 logger = logging.getLogger(__name__)
 
 
+_QTY_OPS = {
+    "<": _operator.lt,
+    ">": _operator.gt,
+    "<=": _operator.le,
+    ">=": _operator.ge,
+}
+
+
 @dataclass(slots=True)
 class AssignmentScope:
     all_parts: bool = True
     part_ids: list[int] | None = None
     categories: list[str] | None = None
+    target_container_id: int | None = None
+    qty_filter_op: str | None = None       # "<", ">", "<=", ">="
+    qty_filter_threshold: int | None = None
 
 
 @dataclass(slots=True)
@@ -132,7 +144,10 @@ class AssignmentService:
             for part in parts:
                 if part.slot_id is not None and part.slot_id != unassigned_slot_id:
                     in_scope_slot_ids.add(part.slot_id)
-        available = self._gather_available_slots(unassigned_slot_id, in_scope_slot_ids)
+        available = self._gather_available_slots(
+            unassigned_slot_id, in_scope_slot_ids,
+            target_container_id=scope.target_container_id,
+        )
 
         # 3. Build current slot map for churn awareness
         current_slot_map = {p.id: p.slot_id for p in parts}
@@ -140,6 +155,7 @@ class AssignmentService:
         # 4. Pack with scarcity-first scored greedy
         assignments, unassigned_parts, reasons = self._pack(
             parts, available, cls_settings, current_slot_map, mode=mode,
+            scope=scope,
         )
 
         # 5. Estimate for unassigned
@@ -191,6 +207,9 @@ class AssignmentService:
             "all_parts": scope.all_parts,
             "part_ids": scope.part_ids,
             "categories": scope.categories,
+            "target_container_id": scope.target_container_id,
+            "qty_filter_op": scope.qty_filter_op,
+            "qty_filter_threshold": scope.qty_filter_threshold,
         }
         cursor = db.execute(
             """
@@ -394,6 +413,7 @@ class AssignmentService:
         self,
         unassigned_slot_id: int | None,
         reusable_slot_ids: set[int] | None = None,
+        target_container_id: int | None = None,
     ) -> dict[StorageClass, list[AvailableSlot]]:
         """Build a mapping of StorageClass to available slots with capacity.
 
@@ -414,6 +434,8 @@ class AssignmentService:
 
         for container in containers:
             if container.name == "Unassigned":
+                continue
+            if target_container_id is not None and container.id != target_container_id:
                 continue
 
             slots = self.storage_repo.list_slots_for_container(container.id)
@@ -496,6 +518,7 @@ class AssignmentService:
         current_slot_map: dict[int, int | None] | None = None,
         *,
         mode: str = "incremental",
+        scope: AssignmentScope | None = None,
     ) -> tuple[list[tuple[int, int]], list[Part], dict[int, str]]:
         """Scarcity-first scored greedy packer.
 
@@ -515,10 +538,20 @@ class AssignmentService:
                 for s in available.get(sc, [])
             )
 
-        # 3. Sort by scarcity (fewest compatible slots first),
-        #    then by preferred class (groups same-type parts), then by part ID
-        #    for deterministic results.
+        # Soft quantity filter: matching parts get priority (sorted first)
+        def _qty_priority(part: Part) -> int:
+            if scope is None or scope.qty_filter_op is None or scope.qty_filter_threshold is None:
+                return 0
+            op_fn = _QTY_OPS.get(scope.qty_filter_op)
+            if op_fn is None:
+                return 0
+            return 0 if op_fn(part.qty, scope.qty_filter_threshold) else 1
+
+        # 3. Sort by qty filter priority (matching first), then scarcity
+        #    (fewest compatible slots), then preferred class (groups same-type
+        #    parts), then part ID for deterministic results.
         part_compats.sort(key=lambda pc: (
+            _qty_priority(pc[0]),
             _compat_capacity(pc[1]),
             self._CLASS_ORDER.get(pc[1].preferred, 99),
             pc[0].id,
