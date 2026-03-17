@@ -79,3 +79,31 @@ def test_run_import_selects_new_source_and_populates_tables(qapp, ui_context, tm
     assert current_source.id == selected_source.id
 
     screen.close()
+
+
+def test_import_pdf_shows_runtime_diagnostic_warning(qapp, ui_context, monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        "eurorack_inventory.ui.boms_screen.get_pdf_runtime_status",
+        lambda: type("Status", (), {"available": False})(),
+    )
+    monkeypatch.setattr(
+        "eurorack_inventory.ui.boms_screen.format_pdf_runtime_error",
+        lambda _status: "Java diagnostic details",
+    )
+
+    def fake_warning(_parent, title, text):
+        captured["title"] = title
+        captured["text"] = text
+        return QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QMessageBox, "warning", fake_warning)
+
+    screen = BomsScreen(ui_context)
+    screen._import_pdf()
+
+    assert captured["title"] == "PDF Import Unavailable"
+    assert captured["text"] == "Java diagnostic details"
+
+    screen.close()

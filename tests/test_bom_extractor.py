@@ -1,4 +1,5 @@
 import csv
+import os
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -6,8 +7,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from eurorack_inventory.services import bom_extractor
 from eurorack_inventory.services.bom_extractor import (
     _unpack_variant_table,
+    format_pdf_runtime_error,
+    get_pdf_runtime_status,
+    check_pdf_available,
     clean_module_name,
     extract_pdf,
     extract_csv,
@@ -173,3 +178,61 @@ class TestExtractPdf:
         assert not result.empty
         assert set(result.columns) == {"VALUE", "QUANTITY", "DETAILS"}
         assert any("220K" in row["VALUE"] for row in result.to_dict(orient="records"))
+
+
+class TestPdfRuntimeProbe:
+    def _write_java(self, path: Path, stderr_text: str, exit_code: int = 0) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "#!/bin/sh\n"
+            f"echo '{stderr_text}' 1>&2\n"
+            f"exit {exit_code}\n"
+        )
+        path.chmod(0o755)
+
+    def test_check_pdf_available_finds_versioned_homebrew_java(self, tmp_path, monkeypatch):
+        formula_root = tmp_path / "opt" / "openjdk@21"
+        java_path = formula_root / "bin" / "java"
+        self._write_java(java_path, 'openjdk version "21.0.2"')
+        (formula_root / "release").write_text("JAVA_VERSION=21")
+
+        monkeypatch.setitem(sys.modules, "tabula", SimpleNamespace())
+        monkeypatch.setattr(bom_extractor, "HOMEBREW_OPT_ROOTS", (tmp_path / "opt",))
+        monkeypatch.setattr(bom_extractor, "HOMEBREW_CELLAR_ROOTS", ())
+        monkeypatch.setattr(bom_extractor, "MACOS_JDK_ROOTS", ())
+        monkeypatch.setattr(bom_extractor, "JAVA_HOME_HELPER_PATH", tmp_path / "missing_java_home")
+        monkeypatch.setattr(bom_extractor.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.delenv("JAVA_HOME", raising=False)
+        monkeypatch.delenv("JDK_HOME", raising=False)
+
+        status = get_pdf_runtime_status()
+
+        assert check_pdf_available() is True
+        assert status.available is True
+        assert status.java.available is True
+        assert status.java.java_path == str(java_path)
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(java_path.parent)
+        assert os.environ["JAVA_HOME"] == str(formula_root)
+
+    def test_format_pdf_runtime_error_includes_execution_failure_details(self, tmp_path, monkeypatch):
+        java_path = tmp_path / "opt" / "openjdk@25" / "bin" / "java"
+        self._write_java(java_path, "blocked by macOS", exit_code=1)
+
+        monkeypatch.setitem(sys.modules, "tabula", SimpleNamespace())
+        monkeypatch.setattr(bom_extractor, "HOMEBREW_OPT_ROOTS", (tmp_path / "opt",))
+        monkeypatch.setattr(bom_extractor, "HOMEBREW_CELLAR_ROOTS", ())
+        monkeypatch.setattr(bom_extractor, "MACOS_JDK_ROOTS", ())
+        monkeypatch.setattr(bom_extractor, "JAVA_HOME_HELPER_PATH", tmp_path / "missing_java_home")
+        monkeypatch.setattr(bom_extractor.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.delenv("JAVA_HOME", raising=False)
+        monkeypatch.delenv("JDK_HOME", raising=False)
+
+        status = get_pdf_runtime_status()
+        message = format_pdf_runtime_error(status)
+
+        assert status.available is False
+        assert "The app could not find a working Java runtime." in message
+        assert str(java_path) in message
+        assert "blocked by macOS" in message

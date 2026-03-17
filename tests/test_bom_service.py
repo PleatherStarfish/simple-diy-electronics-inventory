@@ -112,7 +112,10 @@ class TestBomServiceImportPdf:
             }
         )
 
-        monkeypatch.setattr("eurorack_inventory.services.bom.check_pdf_available", lambda: True)
+        monkeypatch.setattr(
+            "eurorack_inventory.services.bom.get_pdf_runtime_status",
+            lambda: SimpleNamespace(available=True),
+        )
         monkeypatch.setitem(sys.modules, "tabula", SimpleNamespace())
         monkeypatch.setattr(
             "eurorack_inventory.services.bom_extractor._extract_tables_from_pdf",
@@ -146,7 +149,10 @@ class TestBomServiceImportPdf:
             }
         )
 
-        monkeypatch.setattr("eurorack_inventory.services.bom.check_pdf_available", lambda: True)
+        monkeypatch.setattr(
+            "eurorack_inventory.services.bom.get_pdf_runtime_status",
+            lambda: SimpleNamespace(available=True),
+        )
         monkeypatch.setitem(sys.modules, "tabula", SimpleNamespace())
         monkeypatch.setattr(
             "eurorack_inventory.services.bom_extractor._extract_tables_from_pdf",
@@ -167,7 +173,10 @@ class TestBomServiceImportPdf:
         pdf_path = tmp_path / "empty.pdf"
         pdf_path.write_text("fake pdf")
 
-        monkeypatch.setattr("eurorack_inventory.services.bom.check_pdf_available", lambda: True)
+        monkeypatch.setattr(
+            "eurorack_inventory.services.bom.get_pdf_runtime_status",
+            lambda: SimpleNamespace(available=True),
+        )
         monkeypatch.setattr("eurorack_inventory.services.bom.extract_pdf", lambda _path: [])
 
         with pytest.raises(ValueError, match="No BOM data detected"):
@@ -193,7 +202,10 @@ class TestBomServiceImportPdf:
         pdf_path = tmp_path / "persist.pdf"
         pdf_path.write_text("fake pdf")
 
-        monkeypatch.setattr("eurorack_inventory.services.bom.check_pdf_available", lambda: True)
+        monkeypatch.setattr(
+            "eurorack_inventory.services.bom.get_pdf_runtime_status",
+            lambda: SimpleNamespace(available=True),
+        )
         monkeypatch.setattr(
             "eurorack_inventory.services.bom.extract_pdf",
             lambda _path: [

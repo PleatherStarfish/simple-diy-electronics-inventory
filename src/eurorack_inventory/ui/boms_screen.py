@@ -24,7 +24,10 @@ from PySide6.QtWidgets import (
 )
 
 from eurorack_inventory.app import AppContext
-from eurorack_inventory.services.bom_extractor import check_pdf_available
+from eurorack_inventory.services.bom_extractor import (
+    format_pdf_runtime_error,
+    get_pdf_runtime_status,
+)
 from eurorack_inventory.ui.bom_match_dialog import BomMatchDialog
 from eurorack_inventory.ui.bom_models import (
     BomSourceListModel,
@@ -344,13 +347,12 @@ class BomsScreen(QWidget):
         self._run_import([Path(p) for p in paths], "csv")
 
     def _import_pdf(self) -> None:
-        if not check_pdf_available():
+        runtime_status = get_pdf_runtime_status()
+        if not runtime_status.available:
             QMessageBox.warning(
                 self,
-                "Java Required",
-                "PDF import requires Java, which is not installed or was blocked by macOS.\n\n"
-                "Install it with Homebrew:\n"
-                "    brew install openjdk",
+                "PDF Import Unavailable",
+                format_pdf_runtime_error(runtime_status),
             )
             return
         paths, _ = QFileDialog.getOpenFileNames(

@@ -6,7 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -16,68 +20,289 @@ from eurorack_inventory.domain.models import RawBomItem
 
 logger = logging.getLogger(__name__)
 
+HOMEBREW_OPT_ROOTS = (
+    Path("/usr/local/opt"),
+    Path("/opt/homebrew/opt"),
+)
+HOMEBREW_CELLAR_ROOTS = (
+    Path("/usr/local/Cellar"),
+    Path("/opt/homebrew/Cellar"),
+)
+MACOS_JDK_ROOTS = (
+    Path("/Library/Java/JavaVirtualMachines"),
+    Path.home() / "Library/Java/JavaVirtualMachines",
+)
+JAVA_HOME_HELPER_PATH = Path("/usr/libexec/java_home")
 
-def _ensure_java_on_path() -> bool:
-    """Find a working java binary and ensure it is on PATH for tabula-py.
 
-    Returns True if java is available, False otherwise.
-    """
-    import os
-    import shutil
-    import subprocess
+@dataclass(frozen=True)
+class JavaRuntimeStatus:
+    available: bool
+    java_path: str | None = None
+    java_home: str | None = None
+    version_output: str | None = None
+    problem: str | None = None
+    checked_paths: tuple[str, ...] = ()
 
-    if shutil.which("java"):
-        return True
 
-    # Common Homebrew and system locations to search
-    search_dirs = [
-        "/usr/local/opt/openjdk/bin",
-        "/opt/homebrew/opt/openjdk/bin",
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-    ]
-    # Also try /usr/libexec/java_home which finds any installed JDK
-    try:
-        result = subprocess.run(
-            ["/usr/libexec/java_home"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
+@dataclass(frozen=True)
+class PdfRuntimeStatus:
+    available: bool
+    tabula_available: bool
+    java: JavaRuntimeStatus
+
+
+def _is_java_binary(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _add_candidate(
+    candidates: list[Path],
+    seen: set[str],
+    path: Path | str | None,
+) -> None:
+    if path is None:
+        return
+    candidate = Path(path).expanduser()
+    key = str(candidate)
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(candidate)
+
+
+def _discover_java_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    for env_name in ("JAVA_HOME", "JDK_HOME"):
+        java_home = os.environ.get(env_name)
+        if java_home:
+            _add_candidate(candidates, seen, Path(java_home) / "bin" / "java")
+
+    java_on_path = shutil.which("java")
+    if java_on_path:
+        _add_candidate(candidates, seen, java_on_path)
+
+    if JAVA_HOME_HELPER_PATH.exists():
+        try:
+            result = subprocess.run(
+                [str(JAVA_HOME_HELPER_PATH)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            result = None
+        if result is not None and result.returncode == 0:
             java_home = result.stdout.strip()
             if java_home:
-                search_dirs.insert(0, f"{java_home}/bin")
-    except Exception:
-        pass
+                _add_candidate(candidates, seen, Path(java_home) / "bin" / "java")
 
-    for bin_dir in search_dirs:
-        java_path = Path(bin_dir) / "java"
-        if java_path.is_file():
-            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
-            return True
-    return False
+    for root in HOMEBREW_OPT_ROOTS:
+        if not root.exists():
+            continue
+        for formula_dir in sorted(root.glob("openjdk*")):
+            _add_candidate(candidates, seen, formula_dir / "bin" / "java")
+            _add_candidate(
+                candidates,
+                seen,
+                formula_dir / "libexec" / "openjdk.jdk" / "Contents" / "Home" / "bin" / "java",
+            )
+
+    for root in HOMEBREW_CELLAR_ROOTS:
+        if not root.exists():
+            continue
+        for formula_dir in sorted(root.glob("openjdk*"), reverse=True):
+            if not formula_dir.is_dir():
+                continue
+            for version_dir in sorted(formula_dir.iterdir(), reverse=True):
+                if not version_dir.is_dir():
+                    continue
+                _add_candidate(candidates, seen, version_dir / "bin" / "java")
+                _add_candidate(
+                    candidates,
+                    seen,
+                    version_dir / "libexec" / "openjdk.jdk" / "Contents" / "Home" / "bin" / "java",
+                )
+
+    for root in MACOS_JDK_ROOTS:
+        if not root.exists():
+            continue
+        for java_path in sorted(root.glob("*/Contents/Home/bin/java"), reverse=True):
+            _add_candidate(candidates, seen, java_path)
+
+    return candidates
 
 
-def check_pdf_available() -> bool:
-    """Check if tabula-py and Java are available for PDF extraction."""
+def _summarize_java_failure(output: str, returncode: int | None = None) -> str:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped:
+            if returncode is None:
+                return stripped
+            return f"{stripped} (exit {returncode})"
+    if returncode is None:
+        return "java failed to execute"
+    return f"java failed to execute (exit {returncode})"
+
+
+def _infer_java_home(java_path: Path) -> Path | None:
+    resolved = java_path.resolve()
+    if resolved.name != "java" or resolved.parent.name != "bin":
+        return None
+
+    direct_home = resolved.parent.parent
+    if (direct_home / "release").exists():
+        return direct_home
+
+    parts = direct_home.parts
+    if len(parts) >= 2 and parts[-2:] == ("Contents", "Home"):
+        return direct_home
+
+    bundle_home = direct_home / "libexec" / "openjdk.jdk" / "Contents" / "Home"
+    if (bundle_home / "bin" / "java").exists():
+        return bundle_home
+
+    return None
+
+
+def probe_java_runtime() -> JavaRuntimeStatus:
+    checked_paths: list[str] = []
+    failures: list[str] = []
+
+    for candidate in _discover_java_candidates():
+        candidate_str = str(candidate)
+        checked_paths.append(candidate_str)
+        if not _is_java_binary(candidate):
+            continue
+
+        try:
+            result = subprocess.run(
+                [candidate_str, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception as exc:
+            failures.append(f"{candidate_str}: {exc}")
+            continue
+
+        version_output = "\n".join(
+            part.strip() for part in (result.stderr, result.stdout) if part and part.strip()
+        ).strip()
+        if result.returncode != 0:
+            failures.append(
+                f"{candidate_str}: {_summarize_java_failure(version_output, result.returncode)}"
+            )
+            continue
+
+        java_home = _infer_java_home(candidate)
+        java_bin = str(candidate.parent)
+        current_path = os.environ.get("PATH", "")
+        path_parts = current_path.split(os.pathsep) if current_path else []
+        if java_bin not in path_parts:
+            os.environ["PATH"] = java_bin + os.pathsep + current_path if current_path else java_bin
+        if java_home is not None:
+            os.environ["JAVA_HOME"] = str(java_home)
+
+        return JavaRuntimeStatus(
+            available=True,
+            java_path=candidate_str,
+            java_home=str(java_home) if java_home is not None else None,
+            version_output=version_output,
+            checked_paths=tuple(checked_paths),
+        )
+
+    if failures:
+        problem = (
+            "Found Java candidates, but none could be executed. "
+            f"First failure: {failures[0]}"
+        )
+    elif checked_paths:
+        problem = (
+            "No working Java binary was found. "
+            "Checked PATH, Homebrew openjdk/openjdk@* installs, and macOS JDK bundles."
+        )
+    else:
+        problem = "No Java runtime candidates were discovered."
+
+    return JavaRuntimeStatus(
+        available=False,
+        problem=problem,
+        checked_paths=tuple(checked_paths),
+    )
+
+
+def _tabula_available() -> bool:
     try:
         import tabula  # noqa: F401
     except ImportError:
         return False
-    try:
-        import subprocess
+    return True
 
-        if not _ensure_java_on_path():
-            return False
-        result = subprocess.run(
-            ["java", "-version"],
-            capture_output=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+
+def get_pdf_runtime_status() -> PdfRuntimeStatus:
+    tabula_available = _tabula_available()
+    java_status = probe_java_runtime()
+    return PdfRuntimeStatus(
+        available=tabula_available and java_status.available,
+        tabula_available=tabula_available,
+        java=java_status,
+    )
+
+
+def format_pdf_runtime_error(status: PdfRuntimeStatus | None = None) -> str:
+    status = status or get_pdf_runtime_status()
+    if status.available:
+        return ""
+
+    lines = ["PDF import is unavailable."]
+    if not status.tabula_available:
+        lines.extend([
+            "",
+            "Python support for PDF import is missing.",
+            "Install it in the app environment with:",
+            "    pip install tabula-py",
+        ])
+
+    if not status.java.available:
+        lines.extend([
+            "",
+            "The app could not find a working Java runtime.",
+            "Install it with Homebrew:",
+            "    brew install openjdk",
+        ])
+        if status.java.problem:
+            lines.extend([
+                "",
+                f"Diagnostic: {status.java.problem}",
+            ])
+        if status.java.checked_paths:
+            preview = list(status.java.checked_paths[:4])
+            lines.extend([
+                "",
+                "Checked Java paths:",
+                *[f"    {path}" for path in preview],
+            ])
+            remaining = len(status.java.checked_paths) - len(preview)
+            if remaining > 0:
+                lines.append(f"    ... and {remaining} more")
+
+    return "\n".join(lines)
+
+
+def _ensure_java_on_path() -> bool:
+    """Find a working Java runtime and ensure it is on PATH for tabula-py."""
+    return probe_java_runtime().available
+
+
+def check_pdf_available() -> bool:
+    """Check if tabula-py and Java are available for PDF extraction."""
+    status = get_pdf_runtime_status()
+    if not status.available and status.java.problem:
+        logger.info("PDF import unavailable: %s", status.java.problem)
+    return status.available
 
 
 def file_hash(path: Path) -> str:

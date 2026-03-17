@@ -21,6 +21,8 @@ from eurorack_inventory.services.bom_extractor import (
     extract_csv,
     extract_pdf,
     file_hash,
+    format_pdf_runtime_error,
+    get_pdf_runtime_status,
 )
 from eurorack_inventory.services.bom_matching import BomMatchingService
 from eurorack_inventory.services.bom_normalizer import normalize
@@ -101,12 +103,9 @@ class BomService:
 
     def import_pdf(self, pdf_path: Path) -> BomSource:
         """Import a single PDF. Requires tabula-py + Java."""
-        if not check_pdf_available():
-            raise RuntimeError(
-                "PDF import requires tabula-py and Java.\n"
-                "Install with: pip install tabula-py\n"
-                "Also requires Java Runtime Environment."
-            )
+        runtime_status = get_pdf_runtime_status()
+        if not runtime_status.available:
+            raise RuntimeError(format_pdf_runtime_error(runtime_status))
 
         pdf_path = pdf_path.resolve()
         fhash = file_hash(pdf_path)
