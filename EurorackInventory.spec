@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for Simple DIY Electronics Inventory macOS app
 
+from PyInstaller.utils.hooks import collect_data_files
+
+tabula_datas = collect_data_files('tabula')
+
 a = Analysis(
     ['src/eurorack_inventory/__main__.py'],
     pathex=[],
@@ -8,7 +12,7 @@ a = Analysis(
     datas=[
         ('src/eurorack_inventory/db/migrations', 'eurorack_inventory/db/migrations'),
         ('src/eurorack_inventory/resources/AppIcon.png', 'eurorack_inventory/resources'),
-    ],
+    ] + tabula_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
