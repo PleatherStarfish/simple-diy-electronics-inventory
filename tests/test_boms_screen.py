@@ -55,7 +55,7 @@ def test_run_import_selects_new_source_and_populates_tables(qapp, ui_context, tm
     assert screen.current_source_id is not None
     initial_source = ui_context.bom_repo.get_bom_source(screen.current_source_id)
     assert initial_source is not None
-    assert initial_source.module_name == "AAA"
+    assert initial_source.module_name == "Aaa"
 
     imported_csv = tmp_path / "zzz.csv"
     _write_csv(
@@ -68,7 +68,7 @@ def test_run_import_selects_new_source_and_populates_tables(qapp, ui_context, tm
 
     selected_source = ui_context.bom_repo.get_bom_source(screen.current_source_id)
     assert selected_source is not None
-    assert selected_source.module_name == "ZZZ"
+    assert selected_source.module_name == "Zzz"
     assert screen.raw_model.rowCount() == 1
     assert screen.norm_model.rowCount() == 1
 

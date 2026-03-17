@@ -314,6 +314,27 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _title_case_word(word: str) -> str:
+    """Title-case a single word, preserving tokens with mixed digits and uppercase like '4HP', '1U', 'B0N0'."""
+    if not word:
+        return word
+    has_digit = any(ch.isdigit() for ch in word)
+    has_upper = any(ch.isupper() for ch in word)
+    if has_digit and has_upper:
+        return word
+    result = []
+    found_first = False
+    for ch in word:
+        if ch.isalpha() and not found_first:
+            result.append(ch.upper())
+            found_first = True
+        elif ch.isalpha():
+            result.append(ch.lower())
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 def clean_module_name(name: str) -> str:
     """Clean up module name from filename or CSV _module column."""
     if not name:
@@ -326,13 +347,18 @@ def clean_module_name(name: str) -> str:
     for suffix in [
         " Build and BOM", " build and BOM", "_Build_and_BOM",
         "_build_and_bom", "_build_and",
+        " Build notes", " build notes",
         " BOM", " bom", "_BOM", "_bom",
     ]:
         if name.lower().endswith(suffix.lower()):
             name = name[: -len(suffix)]
             break
     name = name.replace("_", " ")
-    name = re.sub(r"\s+", " ", name).strip()
+    # Split camelCase/PascalCase: "DelayNoMore" → "Delay No More"
+    name = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
+    name = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name)
+    # Title case each word
+    name = " ".join(_title_case_word(w) for w in name.split())
     return name
 
 

@@ -22,7 +22,7 @@ from eurorack_inventory.services.bom_extractor import (
 
 class TestCleanModuleName:
     def test_strips_nlc_prefix(self):
-        assert clean_module_name("NLC - 4seq") == "4seq"
+        assert clean_module_name("NLC - 4seq") == "4Seq"
         assert clean_module_name("NLC-Sloth") == "Sloth"
 
     def test_strips_bom_suffix(self):
@@ -39,6 +39,19 @@ class TestCleanModuleName:
 
     def test_empty(self):
         assert clean_module_name("") == ""
+
+    def test_title_case(self):
+        assert clean_module_name("DANIEL") == "Daniel"
+        assert clean_module_name("THE+SHAVER+MYSTERY") == "The Shaver Mystery"
+
+    def test_camel_case_split(self):
+        assert clean_module_name("DanielMILLER") == "Daniel Miller"
+        assert clean_module_name("DelayNoMore+build+notes") == "Delay No More"
+        assert clean_module_name("GooGooMux+Build+and+BOM") == "Goo Goo Mux"
+
+    def test_preserves_digit_tokens(self):
+        assert clean_module_name("4HP+Neuron+Build+and+BOM") == "4HP Neuron"
+        assert clean_module_name("giant+B0N0+build+and+BOM") == "Giant B0N0"
 
 
 class TestFileHash:

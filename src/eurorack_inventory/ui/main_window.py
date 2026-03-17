@@ -128,6 +128,13 @@ class MainWindow(QMainWindow):
         undo_action.triggered.connect(self._undo_last_assignment)
         tools_menu.addAction(undo_action)
 
+        tools_menu.addSeparator()
+
+        normalize_names_action = QAction("&Normalize BOM Names", self)
+        normalize_names_action.setToolTip("Apply title-case normalization to all BOM source names")
+        normalize_names_action.triggered.connect(self._normalize_bom_names)
+        tools_menu.addAction(normalize_names_action)
+
         settings_action = QAction("&Settings...", self)
         settings_action.setToolTip("Configure classifier thresholds and assignment targets")
         settings_action.triggered.connect(self.open_settings_dialog)
@@ -270,6 +277,24 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Undo", f"Restored {restored} parts.")
         self.refresh_all()
+
+    def _normalize_bom_names(self) -> None:
+        from eurorack_inventory.services.bom_extractor import clean_module_name
+
+        sources = self.context.bom_service.list_bom_sources()
+        renamed = 0
+        for source in sources:
+            new_name = clean_module_name(source.module_name)
+            if new_name and new_name != source.module_name:
+                self.context.bom_service.rename_source(source.id, new_name)
+                renamed += 1
+        if renamed:
+            self.refresh_all()
+        QMessageBox.information(
+            self,
+            "Normalize Names",
+            f"Renamed {renamed} of {len(sources)} BOM source(s).",
+        )
 
     def _export_csv(self) -> None:
         from eurorack_inventory.services.csv_backup import (
