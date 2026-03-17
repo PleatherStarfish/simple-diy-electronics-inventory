@@ -50,6 +50,7 @@ class BomsScreen(QWidget):
         # Left panel: source list
         self.source_model = BomSourceListModel()
         self.source_list = QListView()
+        self.source_list.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.source_list.setModel(self.source_model)
         self.source_list.clicked.connect(self._on_source_clicked)
         self.source_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -424,22 +425,45 @@ class BomsScreen(QWidget):
     # ── Delete ──────────────────────────────────────────────────────
 
     def _delete_source(self) -> None:
-        if self.current_source_id is None:
+        selection = self.source_list.selectionModel()
+        if selection is None:
             return
-        source = self.context.bom_repo.get_bom_source(self.current_source_id)
-        if source is None:
+        selected_indexes = selection.selectedRows()
+        if not selected_indexes:
             return
+
+        sources = []
+        for idx in selected_indexes:
+            source = self.source_model.source_at(idx.row())
+            if source is not None:
+                sources.append(source)
+        if not sources:
+            return
+
+        if len(sources) == 1:
+            msg = (
+                f"Delete BOM source '{sources[0].module_name}'?\n\n"
+                "This will remove all raw and normalized items."
+            )
+        else:
+            names = "\n".join(f"  - {s.module_name}" for s in sources)
+            msg = (
+                f"Delete {len(sources)} BOM sources?\n\n"
+                f"{names}\n\n"
+                "This will remove all raw and normalized items."
+            )
+
         reply = QMessageBox.question(
             self,
             "Delete BOM",
-            f"Delete BOM source '{source.module_name}'?\n\n"
-            "This will remove all raw and normalized items.",
+            msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self.context.bom_service.delete_source(self.current_source_id)
+        for source in sources:
+            self.context.bom_service.delete_source(source.id)
         self.current_source_id = None
         self.refresh()
 
@@ -457,11 +481,14 @@ class BomsScreen(QWidget):
         relink_action = None
         if not Path(source.file_path).exists():
             relink_action = menu.addAction("Relink File...")
+        delete_action = menu.addAction("Delete")
         action = menu.exec(self.source_list.viewport().mapToGlobal(pos))
         if action == rename_action:
             self._rename_source(source)
         elif action is not None and action == relink_action:
             self._relink_source(source)
+        elif action == delete_action:
+            self._delete_source()
 
     def _relink_source(self, source) -> None:
         ext_filter = (
