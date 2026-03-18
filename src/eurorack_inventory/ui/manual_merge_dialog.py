@@ -98,16 +98,6 @@ _OVERRIDE_FIELD_DEFS: list[tuple[str, str]] = [
     ("notes", "Notes"),
 ]
 
-_AB_BTN_STYLE = """
-    QPushButton {
-        border: 1px solid #D1D1D6; border-radius: 4px;
-        padding: 2px 8px; font-size: 11px; font-weight: 600;
-        min-width: 28px; max-width: 28px;
-        background-color: #FAFAFA; color: #6E6E73;
-    }
-    QPushButton:hover { background-color: #E8E8ED; }
-    QPushButton:checked { background-color: #0071E3; color: #FFFFFF; border-color: #0071E3; }
-"""
 
 
 def _thin_rule() -> QFrame:
@@ -335,12 +325,18 @@ class ManualMergeDialog(QDialog):
         self._keep_group = QButtonGroup(self)
         self._keep_a_radio = QRadioButton("Part A")
         self._keep_b_radio = QRadioButton("Part B")
+        self._keep_custom_radio = QRadioButton("Custom\u2026")
+        self._keep_custom_radio.setToolTip(
+            "Merge into Part A but pick individual field values from either part"
+        )
         self._keep_a_radio.setChecked(True)
         self._keep_group.addButton(self._keep_a_radio, 0)
         self._keep_group.addButton(self._keep_b_radio, 1)
+        self._keep_group.addButton(self._keep_custom_radio, 2)
         keep_row.addWidget(kl)
         keep_row.addWidget(self._keep_a_radio)
         keep_row.addWidget(self._keep_b_radio)
+        keep_row.addWidget(self._keep_custom_radio)
         keep_row.addStretch()
         dl.addLayout(keep_row)
 
@@ -381,38 +377,36 @@ class ManualMergeDialog(QDialog):
         hint.setStyleSheet("color: #6E6E73; font-size: 11px;")
         og_layout.addWidget(hint)
         of = QFormLayout()
-        of.setSpacing(6)
-        self._override_rows: dict[str, tuple[QPushButton, QPushButton, QLineEdit]] = {}
+        of.setSpacing(12)
+        self._override_rows: dict[str, tuple[QRadioButton, QRadioButton, QLineEdit]] = {}
         for field_name, label in _OVERRIDE_FIELD_DEFS:
-            btn_a = QPushButton("A")
-            btn_a.setCheckable(True)
-            btn_a.setStyleSheet(_AB_BTN_STYLE)
-            btn_b = QPushButton("B")
-            btn_b.setCheckable(True)
-            btn_b.setStyleSheet(_AB_BTN_STYLE)
+            grp = QButtonGroup(self)
+            grp.setExclusive(False)
+            radio_a = QRadioButton("A")
+            radio_b = QRadioButton("B")
+            grp.addButton(radio_a, 0)
+            grp.addButton(radio_b, 1)
             le = QLineEdit()
             le.setStyleSheet(_SEARCH_STYLE)
-            # Wire A/B buttons to fill the field from the respective part
-            btn_a.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "a"))
-            btn_b.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "b"))
-            # Un-check both buttons when user edits manually
+            radio_a.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "a"))
+            radio_b.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "b"))
             le.textEdited.connect(lambda text, fn=field_name: self._on_field_edited(fn))
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(4)
-            row_layout.addWidget(btn_a)
-            row_layout.addWidget(btn_b)
+            row_layout.setSpacing(8)
+            row_layout.addWidget(radio_a)
+            row_layout.addWidget(radio_b)
             row_layout.addWidget(le, 1)
-            self._override_rows[field_name] = (btn_a, btn_b, le)
+            self._override_rows[field_name] = (radio_a, radio_b, le)
             of.addRow(label, row_widget)
         og_layout.addLayout(of)
         self._overrides_group.setLayout(og_layout)
         self._overrides_group.setVisible(False)
         dl.addWidget(self._overrides_group)
 
-        # Update overrides when keep radio changes
-        self._keep_group.buttonToggled.connect(self._refresh_overrides)
+        # Show/hide overrides when keep radio changes
+        self._keep_group.buttonToggled.connect(self._on_keep_changed)
 
         dl.addWidget(_thin_rule())
 
@@ -471,11 +465,15 @@ class ManualMergeDialog(QDialog):
 
         self._populate_comparison(pa, pb, sig_a, sig_b, hard_rejects, warnings)
         self._detail_container.setVisible(True)
-        self._overrides_group.setVisible(True)
         self._merge_btn.setEnabled(True)
-        self._refresh_overrides()
 
     # ── Override helpers ──────────────────────────────────────────────────
+
+    def _on_keep_changed(self, *_args) -> None:
+        is_custom = self._keep_custom_radio.isChecked()
+        self._overrides_group.setVisible(is_custom)
+        if is_custom and hasattr(self, "_part_a"):
+            self._refresh_overrides()
 
     def _pick_field(self, field_name: str, source: str) -> None:
         """Fill a field from Part A or Part B and highlight the chosen button."""
@@ -492,26 +490,25 @@ class ManualMergeDialog(QDialog):
         btn_a.setChecked(False)
         btn_b.setChecked(False)
 
-    def _refresh_overrides(self, *_args) -> None:
-        """Pre-populate all override fields from the kept part."""
+    def _refresh_overrides(self) -> None:
+        """Pre-populate all override fields from Part A (with adopt-blank from B)."""
         if not hasattr(self, "_part_a"):
             return
-        keep_a = self._keep_a_radio.isChecked()
-        keep = self._part_a if keep_a else self._part_b
-        remove = self._part_b if keep_a else self._part_a
+        # Custom mode always merges into Part A; fields start from A with B fallback
+        keep = self._part_a
+        remove = self._part_b
         for field_name, _label in _OVERRIDE_FIELD_DEFS:
             btn_a, btn_b, le = self._override_rows[field_name]
-            # Mirror the merge adopt-blank logic: use keeper's value, fall back to removed
-            keeper_val = getattr(keep, field_name, None)
-            remove_val = getattr(remove, field_name, None)
-            if keeper_val is not None:
-                le.setText(str(keeper_val))
-                btn_a.setChecked(keep_a)
-                btn_b.setChecked(not keep_a)
-            elif remove_val is not None:
-                le.setText(str(remove_val))
-                btn_a.setChecked(not keep_a)
-                btn_b.setChecked(keep_a)
+            val_a = getattr(keep, field_name, None)
+            val_b = getattr(remove, field_name, None)
+            if val_a is not None:
+                le.setText(str(val_a))
+                btn_a.setChecked(True)
+                btn_b.setChecked(False)
+            elif val_b is not None:
+                le.setText(str(val_b))
+                btn_a.setChecked(False)
+                btn_b.setChecked(True)
             else:
                 le.setText("")
                 btn_a.setChecked(False)
@@ -519,9 +516,11 @@ class ManualMergeDialog(QDialog):
 
     def _collect_overrides(self) -> dict[str, str | None] | None:
         """Collect override values that differ from what merge would produce."""
-        keep_a = self._keep_a_radio.isChecked()
-        keep = self._part_a if keep_a else self._part_b
-        remove = self._part_b if keep_a else self._part_a
+        if not self._keep_custom_radio.isChecked():
+            return None
+        # In custom mode, keeper is always Part A
+        keep = self._part_a
+        remove = self._part_b
         overrides: dict[str, str | None] = {}
         for field_name, _label in _OVERRIDE_FIELD_DEFS:
             _btn_a, _btn_b, le = self._override_rows[field_name]
@@ -733,7 +732,8 @@ class ManualMergeDialog(QDialog):
         pa = self._part_a
         pb = self._part_b
 
-        keep_a = self._keep_a_radio.isChecked()
+        # Custom mode always keeps Part A (overrides handle field values)
+        keep_a = self._keep_a_radio.isChecked() or self._keep_custom_radio.isChecked()
         keep = pa if keep_a else pb
         remove = pb if keep_a else pa
 
