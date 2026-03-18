@@ -86,7 +86,7 @@ _COL_B_TINT = QColor("#FFF7EE")   # faint warm
 
 _SECTION_LABEL_STYLE = "color: #6E6E73; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;"
 
-_OVERRIDE_FIELD_LABELS: list[tuple[str, str]] = [
+_OVERRIDE_FIELD_DEFS: list[tuple[str, str]] = [
     ("name", "Name"),
     ("category", "Category"),
     ("manufacturer", "Manufacturer"),
@@ -97,6 +97,17 @@ _OVERRIDE_FIELD_LABELS: list[tuple[str, str]] = [
     ("purchase_url", "Purchase URL"),
     ("notes", "Notes"),
 ]
+
+_AB_BTN_STYLE = """
+    QPushButton {
+        border: 1px solid #D1D1D6; border-radius: 4px;
+        padding: 2px 8px; font-size: 11px; font-weight: 600;
+        min-width: 28px; max-width: 28px;
+        background-color: #FAFAFA; color: #6E6E73;
+    }
+    QPushButton:hover { background-color: #E8E8ED; }
+    QPushButton:checked { background-color: #0071E3; color: #FFFFFF; border-color: #0071E3; }
+"""
 
 
 def _thin_rule() -> QFrame:
@@ -361,17 +372,42 @@ class ManualMergeDialog(QDialog):
 
         dl.addWidget(_thin_rule())
 
-        # ── Override fields ──
-        self._overrides_group = QGroupBox("Merged Result (edit to override)")
+        # ── Merged result fields with per-field A/B picking ──
+        self._overrides_group = QGroupBox("Merged Result")
+        og_layout = QVBoxLayout()
+        og_layout.setContentsMargins(8, 8, 8, 8)
+        og_layout.setSpacing(4)
+        hint = QLabel("Pick values from A or B per field, or type a custom value.")
+        hint.setStyleSheet("color: #6E6E73; font-size: 11px;")
+        og_layout.addWidget(hint)
         of = QFormLayout()
-        of.setContentsMargins(8, 8, 8, 8)
-        self._override_fields: dict[str, QLineEdit] = {}
-        for field_name, label in _OVERRIDE_FIELD_LABELS:
+        of.setSpacing(6)
+        self._override_rows: dict[str, tuple[QPushButton, QPushButton, QLineEdit]] = {}
+        for field_name, label in _OVERRIDE_FIELD_DEFS:
+            btn_a = QPushButton("A")
+            btn_a.setCheckable(True)
+            btn_a.setStyleSheet(_AB_BTN_STYLE)
+            btn_b = QPushButton("B")
+            btn_b.setCheckable(True)
+            btn_b.setStyleSheet(_AB_BTN_STYLE)
             le = QLineEdit()
-            le.setPlaceholderText(f"(from kept part)")
-            self._override_fields[field_name] = le
-            of.addRow(label, le)
-        self._overrides_group.setLayout(of)
+            le.setStyleSheet(_SEARCH_STYLE)
+            # Wire A/B buttons to fill the field from the respective part
+            btn_a.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "a"))
+            btn_b.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "b"))
+            # Un-check both buttons when user edits manually
+            le.textEdited.connect(lambda text, fn=field_name: self._on_field_edited(fn))
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+            row_layout.addWidget(btn_a)
+            row_layout.addWidget(btn_b)
+            row_layout.addWidget(le, 1)
+            self._override_rows[field_name] = (btn_a, btn_b, le)
+            of.addRow(label, row_widget)
+        og_layout.addLayout(of)
+        self._overrides_group.setLayout(og_layout)
         self._overrides_group.setVisible(False)
         dl.addWidget(self._overrides_group)
 
@@ -441,20 +477,45 @@ class ManualMergeDialog(QDialog):
 
     # ── Override helpers ──────────────────────────────────────────────────
 
+    def _pick_field(self, field_name: str, source: str) -> None:
+        """Fill a field from Part A or Part B and highlight the chosen button."""
+        btn_a, btn_b, le = self._override_rows[field_name]
+        part = self._part_a if source == "a" else self._part_b
+        val = getattr(part, field_name, None)
+        le.setText(str(val) if val is not None else "")
+        btn_a.setChecked(source == "a")
+        btn_b.setChecked(source == "b")
+
+    def _on_field_edited(self, field_name: str) -> None:
+        """Un-check A/B buttons when user types a custom value."""
+        btn_a, btn_b, _le = self._override_rows[field_name]
+        btn_a.setChecked(False)
+        btn_b.setChecked(False)
+
     def _refresh_overrides(self, *_args) -> None:
-        """Pre-populate override fields from the kept part (with adopt-blank logic)."""
+        """Pre-populate all override fields from the kept part."""
         if not hasattr(self, "_part_a"):
             return
         keep_a = self._keep_a_radio.isChecked()
         keep = self._part_a if keep_a else self._part_b
         remove = self._part_b if keep_a else self._part_a
-        for field_name, _label in _OVERRIDE_FIELD_LABELS:
-            le = self._override_fields[field_name]
+        for field_name, _label in _OVERRIDE_FIELD_DEFS:
+            btn_a, btn_b, le = self._override_rows[field_name]
             # Mirror the merge adopt-blank logic: use keeper's value, fall back to removed
             keeper_val = getattr(keep, field_name, None)
             remove_val = getattr(remove, field_name, None)
-            effective = keeper_val if keeper_val is not None else remove_val
-            le.setText(str(effective) if effective is not None else "")
+            if keeper_val is not None:
+                le.setText(str(keeper_val))
+                btn_a.setChecked(keep_a)
+                btn_b.setChecked(not keep_a)
+            elif remove_val is not None:
+                le.setText(str(remove_val))
+                btn_a.setChecked(not keep_a)
+                btn_b.setChecked(keep_a)
+            else:
+                le.setText("")
+                btn_a.setChecked(False)
+                btn_b.setChecked(False)
 
     def _collect_overrides(self) -> dict[str, str | None] | None:
         """Collect override values that differ from what merge would produce."""
@@ -462,8 +523,8 @@ class ManualMergeDialog(QDialog):
         keep = self._part_a if keep_a else self._part_b
         remove = self._part_b if keep_a else self._part_a
         overrides: dict[str, str | None] = {}
-        for field_name, _label in _OVERRIDE_FIELD_LABELS:
-            le = self._override_fields[field_name]
+        for field_name, _label in _OVERRIDE_FIELD_DEFS:
+            _btn_a, _btn_b, le = self._override_rows[field_name]
             user_val = le.text().strip() or None
             keeper_val = getattr(keep, field_name, None)
             remove_val = getattr(remove, field_name, None)
