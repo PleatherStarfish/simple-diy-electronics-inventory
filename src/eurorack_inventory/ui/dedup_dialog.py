@@ -5,9 +5,12 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
+    QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -92,6 +95,39 @@ _BTN_OUTLINE_RED = """
     QPushButton:hover { background-color: #FFEBEE; border-color: #C62828; }
     QPushButton:disabled { color: #BDBDBD; border-color: #EEEEEE; }
 """
+
+
+_AB_BTN_STYLE = """
+    QPushButton {
+        border: 1px solid #D1D1D6; border-radius: 4px;
+        padding: 2px 8px; font-size: 11px; font-weight: 600;
+        min-width: 28px; max-width: 28px;
+        background-color: #FAFAFA; color: #6E6E73;
+    }
+    QPushButton:hover { background-color: #E8E8ED; }
+    QPushButton:checked { background-color: #0071E3; color: #FFFFFF; border-color: #0071E3; }
+"""
+
+_SEARCH_STYLE = """
+    QLineEdit {
+        border: 1px solid #D1D1D6; border-radius: 6px;
+        padding: 5px 10px; font-size: 13px;
+        background-color: #FFFFFF;
+    }
+    QLineEdit:focus { border-color: #0071E3; }
+"""
+
+_OVERRIDE_FIELD_DEFS: list[tuple[str, str]] = [
+    ("name", "Name"),
+    ("category", "Category"),
+    ("manufacturer", "Manufacturer"),
+    ("mpn", "MPN"),
+    ("supplier_sku", "Supplier SKU"),
+    ("supplier_name", "Supplier"),
+    ("default_package", "Package"),
+    ("purchase_url", "Purchase URL"),
+    ("notes", "Notes"),
+]
 
 
 def _thin_rule() -> QFrame:
@@ -231,6 +267,48 @@ class DedupDialog(QDialog):
 
         dl.addWidget(_thin_rule())
 
+        # ── Merged result fields with per-field A/B picking ──
+        self._overrides_group = QGroupBox("Merged Result")
+        og_layout = QVBoxLayout()
+        og_layout.setContentsMargins(8, 8, 8, 8)
+        og_layout.setSpacing(4)
+        hint = QLabel("Pick values from A or B per field, or type a custom value.")
+        hint.setStyleSheet("color: #6E6E73; font-size: 11px;")
+        og_layout.addWidget(hint)
+        of = QFormLayout()
+        of.setSpacing(6)
+        self._override_rows: dict[str, tuple[QPushButton, QPushButton, QLineEdit]] = {}
+        for field_name, label in _OVERRIDE_FIELD_DEFS:
+            btn_a = QPushButton("A")
+            btn_a.setCheckable(True)
+            btn_a.setStyleSheet(_AB_BTN_STYLE)
+            btn_b = QPushButton("B")
+            btn_b.setCheckable(True)
+            btn_b.setStyleSheet(_AB_BTN_STYLE)
+            le = QLineEdit()
+            le.setStyleSheet(_SEARCH_STYLE)
+            btn_a.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "a"))
+            btn_b.clicked.connect(lambda checked, fn=field_name: self._pick_field(fn, "b"))
+            le.textEdited.connect(lambda text, fn=field_name: self._on_field_edited(fn))
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+            row_layout.addWidget(btn_a)
+            row_layout.addWidget(btn_b)
+            row_layout.addWidget(le, 1)
+            self._override_rows[field_name] = (btn_a, btn_b, le)
+            of.addRow(label, row_widget)
+        og_layout.addLayout(of)
+        self._overrides_group.setLayout(og_layout)
+        self._overrides_group.setVisible(False)
+        dl.addWidget(self._overrides_group)
+
+        # Update overrides when keep radio changes
+        self._keep_group.buttonToggled.connect(self._refresh_overrides)
+
+        dl.addWidget(_thin_rule())
+
         # Action buttons
         btns = QHBoxLayout()
         btns.setSpacing(8)
@@ -273,6 +351,7 @@ class DedupDialog(QDialog):
         self._comparison_table.setRowCount(0)
         self._set_actions(False)
         self._slot_container.setVisible(False)
+        self._overrides_group.setVisible(False)
         self._chips_label.setText("")
 
         if not self._pairs:
@@ -298,11 +377,14 @@ class DedupDialog(QDialog):
         if current is None:
             self._current_pair = None
             self._set_actions(False)
+            self._overrides_group.setVisible(False)
             return
         pair: DuplicatePair = current.data(Qt.ItemDataRole.UserRole)
         self._current_pair = pair
         self._populate_comparison(pair)
         self._select_default_keep(pair)
+        self._overrides_group.setVisible(True)
+        self._refresh_overrides()
         self._set_actions(True)
 
     def _populate_comparison(self, pair: DuplicatePair) -> None:
@@ -402,6 +484,66 @@ class DedupDialog(QDialog):
         else:
             self._keep_b_radio.setChecked(True)
 
+    # ── Override helpers ────────────────────────────────────────────────
+
+    def _pick_field(self, field_name: str, source: str) -> None:
+        btn_a, btn_b, le = self._override_rows[field_name]
+        pair = self._current_pair
+        if pair is None:
+            return
+        part = pair.part_a if source == "a" else pair.part_b
+        val = getattr(part, field_name, None)
+        le.setText(str(val) if val is not None else "")
+        btn_a.setChecked(source == "a")
+        btn_b.setChecked(source == "b")
+
+    def _on_field_edited(self, field_name: str) -> None:
+        btn_a, btn_b, _le = self._override_rows[field_name]
+        btn_a.setChecked(False)
+        btn_b.setChecked(False)
+
+    def _refresh_overrides(self, *_args) -> None:
+        pair = self._current_pair
+        if pair is None:
+            return
+        keep_a = self._keep_a_radio.isChecked()
+        keep = pair.part_a if keep_a else pair.part_b
+        remove = pair.part_b if keep_a else pair.part_a
+        for field_name, _label in _OVERRIDE_FIELD_DEFS:
+            btn_a, btn_b, le = self._override_rows[field_name]
+            keeper_val = getattr(keep, field_name, None)
+            remove_val = getattr(remove, field_name, None)
+            if keeper_val is not None:
+                le.setText(str(keeper_val))
+                btn_a.setChecked(keep_a)
+                btn_b.setChecked(not keep_a)
+            elif remove_val is not None:
+                le.setText(str(remove_val))
+                btn_a.setChecked(not keep_a)
+                btn_b.setChecked(keep_a)
+            else:
+                le.setText("")
+                btn_a.setChecked(False)
+                btn_b.setChecked(False)
+
+    def _collect_overrides(self) -> dict[str, str | None] | None:
+        pair = self._current_pair
+        if pair is None:
+            return None
+        keep_a = self._keep_a_radio.isChecked()
+        keep = pair.part_a if keep_a else pair.part_b
+        remove = pair.part_b if keep_a else pair.part_a
+        overrides: dict[str, str | None] = {}
+        for field_name, _label in _OVERRIDE_FIELD_DEFS:
+            _btn_a, _btn_b, le = self._override_rows[field_name]
+            user_val = le.text().strip() or None
+            keeper_val = getattr(keep, field_name, None)
+            remove_val = getattr(remove, field_name, None)
+            effective = keeper_val if keeper_val is not None else remove_val
+            if user_val != effective:
+                overrides[field_name] = user_val
+        return overrides or None
+
     # ── Actions ───────────────────────────────────────────────────────────
 
     def _do_merge(self) -> None:
@@ -430,6 +572,7 @@ class DedupDialog(QDialog):
                 keep.id, remove.id, keep_slot_id=slot_id,
                 score=pair.score, reasons=pair.match_reasons,
                 sig_a=pair.sig_a, sig_b=pair.sig_b,
+                overrides=self._collect_overrides(),
             )
         except ValueError as exc:
             QMessageBox.critical(self, "Merge Failed", str(exc))
@@ -467,6 +610,7 @@ class DedupDialog(QDialog):
             self._comparison_table.setRowCount(0)
             self._set_actions(False)
             self._slot_container.setVisible(False)
+            self._overrides_group.setVisible(False)
             self._chips_label.setText("")
             self._count_label.setText("All done")
 
