@@ -31,6 +31,19 @@ _MERGE_ADOPTABLE_FIELDS = (
     "category",
 )
 
+_MERGE_OVERRIDABLE_FIELDS = {
+    "name",
+    "category",
+    "manufacturer",
+    "mpn",
+    "supplier_name",
+    "supplier_sku",
+    "purchase_url",
+    "default_package",
+    "notes",
+    "storage_class_override",
+}
+
 
 @dataclass(slots=True)
 class DuplicatePair:
@@ -160,6 +173,7 @@ class DedupService:
         reasons: list[str] | None = None,
         sig_a: PartSignature | None = None,
         sig_b: PartSignature | None = None,
+        overrides: dict[str, str | None] | None = None,
     ) -> MergeResult:
         if keep_id == remove_id:
             raise ValueError("Cannot merge a part with itself")
@@ -190,6 +204,20 @@ class DedupService:
                 if getattr(keep, fname) is None and getattr(remove, fname) is not None:
                     update_fields[fname] = getattr(remove, fname)
                     fields_adopted.append(fname)
+
+            # 2b. Apply caller overrides (custom name, category, etc.)
+            overrides_applied: list[str] = []
+            if overrides:
+                for fname, fval in overrides.items():
+                    if fname not in _MERGE_OVERRIDABLE_FIELDS:
+                        continue
+                    current = update_fields.get(fname, getattr(keep, fname, None))
+                    if fval != current:
+                        update_fields[fname] = fval
+                        overrides_applied.append(fname)
+                # Name change requires updating normalized_name too
+                if "name" in overrides and "name" in overrides_applied:
+                    update_fields["normalized_name"] = normalize_text(overrides["name"] or "")
 
             # 3. Slot resolution
             discarded_slot_label: str | None = None
@@ -259,12 +287,13 @@ class DedupService:
 
             # 8. Recompute fingerprint
             # Resolve post-merge field values
+            post_name = update_fields.get("name", keep.name)
             post_category = update_fields.get("category", keep.category)
             post_sku = update_fields.get("supplier_sku", keep.supplier_sku)
             post_package = update_fields.get("default_package", keep.default_package)
             new_fingerprint = make_part_fingerprint(
                 category=post_category,
-                name=keep.name,
+                name=post_name,
                 supplier_sku=post_sku,
                 package=post_package,
             )
@@ -302,6 +331,7 @@ class DedupService:
                     "qty_before": qty_before,
                     "qty_after": new_qty,
                     "fields_adopted": fields_adopted,
+                    "fields_overridden": overrides_applied,
                     "discarded_slot_label": discarded_slot_label,
                 },
             )

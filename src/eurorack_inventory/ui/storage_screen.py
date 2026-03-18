@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QListView,
     QMenu,
@@ -366,14 +367,22 @@ class StorageScreen(QWidget):
 
         self.add_container_btn = QPushButton("Add Container")
         self.add_container_btn.clicked.connect(self._add_container)
+        self.clone_container_btn = QPushButton("Clone Container")
+        self.clone_container_btn.clicked.connect(self._clone_container)
+        self.clone_container_btn.setEnabled(False)
         self.delete_container_btn = QPushButton("Delete Container")
         self.delete_container_btn.clicked.connect(self._delete_container)
         self.delete_container_btn.setEnabled(False)
 
         # --- Right panel: container details ---
-        self.container_name = QLabel("")
+        self.container_name = QLineEdit("")
+        self.container_name.setPlaceholderText("Container name")
+        self.container_name.editingFinished.connect(self._on_name_edited)
         self.container_type = QLabel("")
         self.container_meta = QLabel("")
+        self.container_notes = QLineEdit("")
+        self.container_notes.setPlaceholderText("Notes (optional)")
+        self.container_notes.editingFinished.connect(self._on_notes_edited)
 
         # Grid visualization — selection disabled; we track clicks ourselves
         self.grid_table = StorageGridTable()
@@ -453,6 +462,7 @@ class StorageScreen(QWidget):
         left_layout.addWidget(QLabel("Containers"))
         left_layout.addWidget(self.container_list)
         left_layout.addWidget(self.add_container_btn)
+        left_layout.addWidget(self.clone_container_btn)
         left_layout.addWidget(self.delete_container_btn)
 
         left_widget = QWidget()
@@ -463,6 +473,7 @@ class StorageScreen(QWidget):
         detail_layout.addRow("Name", self.container_name)
         detail_layout.addRow("Type", self.container_type)
         detail_layout.addRow("Metadata", self.container_meta)
+        detail_layout.addRow("Notes", self.container_notes)
         detail_group.setLayout(detail_layout)
 
         merge_row = QHBoxLayout()
@@ -572,6 +583,24 @@ class StorageScreen(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Create container failed", str(exc))
 
+    def _clone_container(self) -> None:
+        if self.current_container_id is None:
+            return
+        suggested = self.context.storage_service.suggest_clone_name(self.current_container_id)
+        name, ok = QInputDialog.getText(
+            self, "Clone Container", "Name for the new container:", text=suggested,
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            clone = self.context.storage_service.clone_container(
+                self.current_container_id, name.strip(),
+            )
+            self.refresh()
+            self.load_container(clone.id)
+        except Exception as exc:
+            QMessageBox.critical(self, "Clone failed", str(exc))
+
     def _delete_container(self) -> None:
         if self.current_container_id is None:
             return
@@ -584,10 +613,42 @@ class StorageScreen(QWidget):
         try:
             self.context.storage_service.delete_container(self.current_container_id)
             self.current_container_id = None
+            self.clone_container_btn.setEnabled(False)
             self.delete_container_btn.setEnabled(False)
             self.refresh()
         except Exception as exc:
             QMessageBox.critical(self, "Delete failed", str(exc))
+
+    # -------------------------------------------------- inline editing
+
+    def _on_name_edited(self) -> None:
+        if self.current_container_id is None:
+            return
+        new_name = self.container_name.text().strip()
+        if not new_name:
+            # Revert to current name
+            container = self.context.storage_repo.get_container(self.current_container_id)
+            if container:
+                self.container_name.setText(container.name)
+            return
+        try:
+            self.context.storage_service.rename_container(self.current_container_id, new_name)
+            self.refresh()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Rename failed", str(exc))
+            container = self.context.storage_repo.get_container(self.current_container_id)
+            if container:
+                self.container_name.setText(container.name)
+
+    def _on_notes_edited(self) -> None:
+        if self.current_container_id is None:
+            return
+        try:
+            self.context.storage_service.update_container_notes(
+                self.current_container_id, self.container_notes.text(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Update failed", str(exc))
 
     # --------------------------------------------------- container detail view
 
@@ -596,11 +657,16 @@ class StorageScreen(QWidget):
         if container is None:
             return
         self.current_container_id = container_id
+        self.clone_container_btn.setEnabled(True)
         self.delete_container_btn.setEnabled(True)
         self._selected_slot_labels.clear()
         self.container_name.setText(container.name)
         self.container_type.setText(container.container_type)
         self.container_meta.setText(str(container.metadata))
+        self.container_notes.setText(container.notes or "")
+        is_system = container.name == "Unassigned"
+        self.container_name.setReadOnly(is_system)
+        self.container_notes.setReadOnly(is_system)
         slots = self.context.storage_service.list_slots(container_id)
         slot_ids = [s.id for s in slots if s.id is not None]
         self._slot_parts = self.context.part_repo.list_parts_by_slot_ids(slot_ids)

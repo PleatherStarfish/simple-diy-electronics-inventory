@@ -101,6 +101,45 @@ class StorageService:
         )
         return container
 
+    def rename_container(self, container_id: int, new_name: str) -> StorageContainer:
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Container name cannot be empty")
+        container = self.storage_repo.get_container(container_id)
+        if container is None:
+            raise ValueError(f"Unknown container_id={container_id}")
+        if container.name == new_name:
+            return container
+        existing = self.storage_repo.get_container_by_name(new_name)
+        if existing is not None:
+            raise ValueError(f"A container named {new_name!r} already exists")
+        old_name = container.name
+        container.name = new_name
+        updated = self.storage_repo.update_container(container)
+        self.audit_repo.add_event(
+            event_type="container.renamed",
+            entity_type="container",
+            entity_id=container_id,
+            message=f"Renamed container {old_name!r} to {new_name!r}",
+            payload={"old_name": old_name, "new_name": new_name},
+        )
+        return updated
+
+    def update_container_notes(self, container_id: int, notes: str) -> StorageContainer:
+        container = self.storage_repo.get_container(container_id)
+        if container is None:
+            raise ValueError(f"Unknown container_id={container_id}")
+        container.notes = notes or None
+        updated = self.storage_repo.update_container(container)
+        self.audit_repo.add_event(
+            event_type="container.notes_updated",
+            entity_type="container",
+            entity_id=container_id,
+            message=f"Updated notes for container {container.name!r}",
+            payload={"notes": notes},
+        )
+        return updated
+
     def list_containers(self) -> list[StorageContainer]:
         return self.storage_repo.list_containers()
 
@@ -697,6 +736,67 @@ class StorageService:
                 "parts_unassigned": unassigned_count,
             },
         )
+
+    def clone_container(self, container_id: int, new_name: str) -> StorageContainer:
+        """Clone a container (empty) with all its slot structure and metadata."""
+        source = self.storage_repo.get_container(container_id)
+        if source is None:
+            raise ValueError(f"Unknown container_id={container_id}")
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Container name cannot be empty")
+        if self.storage_repo.get_container_by_name(new_name) is not None:
+            raise ValueError(f"A container named {new_name!r} already exists")
+
+        clone = self.storage_repo.create_container(
+            StorageContainer(
+                id=None,
+                name=new_name,
+                container_type=source.container_type,
+                metadata=dict(source.metadata),
+                notes=source.notes,
+                sort_order=source.sort_order,
+            )
+        )
+
+        for slot in self.storage_repo.list_slots_for_container(container_id):
+            self.storage_repo.create_slot(
+                StorageSlot(
+                    id=None,
+                    container_id=clone.id,
+                    label=slot.label,
+                    slot_type=slot.slot_type,
+                    ordinal=slot.ordinal,
+                    x1=slot.x1,
+                    y1=slot.y1,
+                    x2=slot.x2,
+                    y2=slot.y2,
+                    metadata=dict(slot.metadata),
+                    notes=slot.notes,
+                )
+            )
+
+        self.audit_repo.add_event(
+            event_type="container.cloned",
+            entity_type="container",
+            entity_id=clone.id,
+            message=f"Cloned container {source.name!r} as {new_name!r}",
+            payload={"source_container_id": container_id},
+        )
+        return clone
+
+    def suggest_clone_name(self, container_id: int) -> str:
+        """Suggest a name for a cloned container, e.g. 'Box 1 (1)'."""
+        source = self.storage_repo.get_container(container_id)
+        if source is None:
+            return ""
+        base = source.name
+        n = 1
+        while True:
+            candidate = f"{base} ({n})"
+            if self.storage_repo.get_container_by_name(candidate) is None:
+                return candidate
+            n += 1
 
     def _slots_have_stock(self, slot_ids: list[int]) -> bool:
         if not slot_ids:

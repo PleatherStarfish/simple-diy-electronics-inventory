@@ -25,6 +25,8 @@ APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_APP_PASSWORD="${APPLE_APP_PASSWORD:-}"
 
 echo "==> Cleaning previous builds"
+# Eject any mounted DMG from a previous build to avoid rm failures
+hdiutil detach "/Volumes/${APP_NAME}" 2>/dev/null || true
 rm -rf build dist
 
 echo "==> Running PyInstaller"

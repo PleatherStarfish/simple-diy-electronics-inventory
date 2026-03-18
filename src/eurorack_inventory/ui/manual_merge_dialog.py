@@ -5,7 +5,9 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
+    QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -83,6 +85,18 @@ _COL_A_TINT = QColor("#F0F4FF")   # faint blue
 _COL_B_TINT = QColor("#FFF7EE")   # faint warm
 
 _SECTION_LABEL_STYLE = "color: #6E6E73; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;"
+
+_OVERRIDE_FIELD_LABELS: list[tuple[str, str]] = [
+    ("name", "Name"),
+    ("category", "Category"),
+    ("manufacturer", "Manufacturer"),
+    ("mpn", "MPN"),
+    ("supplier_sku", "Supplier SKU"),
+    ("supplier_name", "Supplier"),
+    ("default_package", "Package"),
+    ("purchase_url", "Purchase URL"),
+    ("notes", "Notes"),
+]
 
 
 def _thin_rule() -> QFrame:
@@ -347,6 +361,25 @@ class ManualMergeDialog(QDialog):
 
         dl.addWidget(_thin_rule())
 
+        # ── Override fields ──
+        self._overrides_group = QGroupBox("Merged Result (edit to override)")
+        of = QFormLayout()
+        of.setContentsMargins(8, 8, 8, 8)
+        self._override_fields: dict[str, QLineEdit] = {}
+        for field_name, label in _OVERRIDE_FIELD_LABELS:
+            le = QLineEdit()
+            le.setPlaceholderText(f"(from kept part)")
+            self._override_fields[field_name] = le
+            of.addRow(label, le)
+        self._overrides_group.setLayout(of)
+        self._overrides_group.setVisible(False)
+        dl.addWidget(self._overrides_group)
+
+        # Update overrides when keep radio changes
+        self._keep_group.buttonToggled.connect(self._refresh_overrides)
+
+        dl.addWidget(_thin_rule())
+
         # Action buttons
         btns = QHBoxLayout()
         btns.setSpacing(8)
@@ -402,7 +435,42 @@ class ManualMergeDialog(QDialog):
 
         self._populate_comparison(pa, pb, sig_a, sig_b, hard_rejects, warnings)
         self._detail_container.setVisible(True)
+        self._overrides_group.setVisible(True)
         self._merge_btn.setEnabled(True)
+        self._refresh_overrides()
+
+    # ── Override helpers ──────────────────────────────────────────────────
+
+    def _refresh_overrides(self, *_args) -> None:
+        """Pre-populate override fields from the kept part (with adopt-blank logic)."""
+        if not hasattr(self, "_part_a"):
+            return
+        keep_a = self._keep_a_radio.isChecked()
+        keep = self._part_a if keep_a else self._part_b
+        remove = self._part_b if keep_a else self._part_a
+        for field_name, _label in _OVERRIDE_FIELD_LABELS:
+            le = self._override_fields[field_name]
+            # Mirror the merge adopt-blank logic: use keeper's value, fall back to removed
+            keeper_val = getattr(keep, field_name, None)
+            remove_val = getattr(remove, field_name, None)
+            effective = keeper_val if keeper_val is not None else remove_val
+            le.setText(str(effective) if effective is not None else "")
+
+    def _collect_overrides(self) -> dict[str, str | None] | None:
+        """Collect override values that differ from what merge would produce."""
+        keep_a = self._keep_a_radio.isChecked()
+        keep = self._part_a if keep_a else self._part_b
+        remove = self._part_b if keep_a else self._part_a
+        overrides: dict[str, str | None] = {}
+        for field_name, _label in _OVERRIDE_FIELD_LABELS:
+            le = self._override_fields[field_name]
+            user_val = le.text().strip() or None
+            keeper_val = getattr(keep, field_name, None)
+            remove_val = getattr(remove, field_name, None)
+            effective = keeper_val if keeper_val is not None else remove_val
+            if user_val != effective:
+                overrides[field_name] = user_val
+        return overrides or None
 
     # ── Build comparison tables ──────────────────────────────────────────
 
@@ -635,6 +703,7 @@ class ManualMergeDialog(QDialog):
             self.context.dedup_service.merge_parts(
                 keep.id, remove.id, keep_slot_id=slot_id,
                 sig_a=self._sig_a, sig_b=self._sig_b,
+                overrides=self._collect_overrides(),
             )
         except ValueError as exc:
             QMessageBox.critical(self, "Merge Failed", str(exc))
