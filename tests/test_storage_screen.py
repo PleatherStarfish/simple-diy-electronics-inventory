@@ -279,10 +279,11 @@ def test_binder_renders_cards_with_bag_count(qapp, ui_context) -> None:
     screen.load_container(container.id)
 
     assert screen.grid_table.rowCount() == 3
-    assert screen.grid_table.columnCount() == 3
+    assert screen.grid_table.columnCount() == 4
     assert screen.grid_table.item(0, 0).text() == "Card 1"
     assert screen.grid_table.item(0, 1).text() == "6 bags"
-    assert screen.grid_table.item(0, 2).text() == ""  # no parts assigned yet
+    assert screen.grid_table.item(0, 2).text() == "6 free"  # all available
+    assert screen.grid_table.item(0, 3).text() == ""  # no parts assigned yet
     assert screen.grid_table.item(2, 0).text() == "Card 3"
     assert screen.binder_cards_spin.value() == 3
     # Check visibility policy (not isVisible, which requires a visible parent)

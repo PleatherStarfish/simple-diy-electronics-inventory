@@ -730,6 +730,7 @@ class StorageService:
             raise ValueError("Can only update bag count on card slots")
 
         metadata = dict(slot.metadata)
+        old_bag_count = metadata.get("bag_count", 4)
         metadata["bag_count"] = bag_count
         slot.metadata = metadata
         updated = self.storage_repo.update_slot(slot)
@@ -738,9 +739,34 @@ class StorageService:
             entity_type="slot",
             entity_id=slot_id,
             message=f"Updated bag count for {slot.label} to {bag_count}",
-            payload={"bag_count": bag_count},
+            payload={"old_bag_count": old_bag_count, "bag_count": bag_count},
         )
+        # If bag count was reduced, unassign overflow parts
+        if bag_count < old_bag_count:
+            self._unassign_overflow_parts(updated)
         return updated
+
+    def _unassign_overflow_parts(self, slot: StorageSlot) -> None:
+        """Unassign excess parts when a card's bag count is reduced below occupancy."""
+        if self.part_repo is None:
+            return
+        bag_count = slot.metadata.get("bag_count", 4)
+        parts_map = self.part_repo.list_parts_by_slot_ids([slot.id])
+        parts = parts_map.get(slot.id, [])
+        if len(parts) <= bag_count:
+            return
+        # Unassign the last parts (by id) to bring count down to bag_count
+        parts_sorted = sorted(parts, key=lambda p: p.id)
+        overflow = parts_sorted[bag_count:]
+        for part in overflow:
+            self.part_repo.update_part(part.id, slot_id=None)
+            self.audit_repo.add_event(
+                event_type="part.auto_unassigned",
+                entity_type="part",
+                entity_id=part.id,
+                message=f"Auto-unassigned {part.name}: card {slot.label} bag count reduced",
+                payload={"slot_id": slot.id, "slot_label": slot.label},
+            )
 
     def delete_container(self, container_id: int) -> None:
         container = self.storage_repo.get_container(container_id)

@@ -470,3 +470,183 @@ def test_delete_slot_repository(services) -> None:
     storage_repo.delete_slot(slots[0].id)
     remaining = storage_repo.list_slots_for_container(container.id)
     assert len(remaining) == 1
+
+
+# ------------------------------------------------------------------ Binder tests
+
+
+def test_binder_card_ordinals(services) -> None:
+    """Cards should have sequential ordinals matching their card number."""
+    storage_svc, _, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder Ord", num_cards=5)
+
+    slots = storage_repo.list_slots_for_container(container.id)
+    for i, slot in enumerate(slots, 1):
+        assert slot.ordinal == i
+        assert slot.label == f"Card {i}"
+
+
+def test_binder_resize_preserves_existing_cards(services) -> None:
+    """Growing a binder should not alter existing cards."""
+    storage_svc, _, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder Pres", num_cards=3, bags_per_card=6)
+
+    storage_svc.resize_binder(container_id=container.id, new_num_cards=5)
+
+    slots = storage_repo.list_slots_for_container(container.id)
+    assert len(slots) == 5
+    # Original cards should still have bag_count=6
+    for slot in slots[:3]:
+        assert slot.metadata["bag_count"] == 6
+    # New cards get the container's default bags_per_card
+    for slot in slots[3:]:
+        assert slot.metadata["bag_count"] == 6
+
+
+def test_binder_resize_to_zero_fails(services) -> None:
+    storage_svc, _, _, _ = services
+    container = storage_svc.configure_binder(name="Binder Zero", num_cards=3)
+
+    with pytest.raises(ValueError, match="at least 1"):
+        storage_svc.resize_binder(container_id=container.id, new_num_cards=0)
+
+
+def test_binder_resize_same_size_noop(services) -> None:
+    """Resizing to the same size should not change anything."""
+    storage_svc, _, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder Same", num_cards=3)
+
+    storage_svc.resize_binder(container_id=container.id, new_num_cards=3)
+
+    slots = storage_repo.list_slots_for_container(container.id)
+    assert len(slots) == 3
+
+
+def test_delete_binder_unassigns_parts(services) -> None:
+    """Deleting a binder with assigned parts should unassign them."""
+    storage_svc, inventory_svc, storage_repo, db = services
+    container = storage_svc.configure_binder(name="Binder DU", num_cards=2)
+
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    part = inventory_svc.upsert_part(name="TL072", category="ICs", qty=3, slot_id=card1.id)
+
+    storage_svc.delete_container(container.id)
+
+    assert storage_repo.get_container(container.id) is None
+
+    from eurorack_inventory.repositories.parts import PartRepository
+    part_repo = PartRepository(db)
+    updated = part_repo.get_part_by_id(part.id)
+    assert updated is not None
+    assert updated.slot_id is None
+    assert updated.qty == 3
+
+
+def test_update_bag_count_unassigns_overflow(services) -> None:
+    """Reducing bag count below occupancy should auto-unassign excess parts."""
+    storage_svc, inventory_svc, storage_repo, db = services
+    container = storage_svc.configure_binder(name="Binder OF", num_cards=1, bags_per_card=4)
+
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    p1 = inventory_svc.upsert_part(name="IC 1", category="ICs", qty=1, slot_id=card1.id)
+    p2 = inventory_svc.upsert_part(name="IC 2", category="ICs", qty=1, slot_id=card1.id)
+    p3 = inventory_svc.upsert_part(name="IC 3", category="ICs", qty=1, slot_id=card1.id)
+
+    # Reduce bag count to 1 — should unassign 2 parts
+    storage_svc.update_card_bag_count(slot_id=card1.id, bag_count=1)
+
+    from eurorack_inventory.repositories.parts import PartRepository
+    part_repo = PartRepository(db)
+    still_assigned = [
+        p for p in [part_repo.get_part_by_id(p1.id),
+                     part_repo.get_part_by_id(p2.id),
+                     part_repo.get_part_by_id(p3.id)]
+        if p.slot_id == card1.id
+    ]
+    unassigned = [
+        p for p in [part_repo.get_part_by_id(p1.id),
+                     part_repo.get_part_by_id(p2.id),
+                     part_repo.get_part_by_id(p3.id)]
+        if p.slot_id is None
+    ]
+    assert len(still_assigned) == 1
+    assert len(unassigned) == 2
+
+
+def test_update_bag_count_no_unassign_when_within_limit(services) -> None:
+    """Reducing bag count but still above occupancy should not unassign."""
+    storage_svc, inventory_svc, storage_repo, db = services
+    container = storage_svc.configure_binder(name="Binder NF", num_cards=1, bags_per_card=6)
+
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    p1 = inventory_svc.upsert_part(name="IC 1", category="ICs", qty=1, slot_id=card1.id)
+    p2 = inventory_svc.upsert_part(name="IC 2", category="ICs", qty=1, slot_id=card1.id)
+
+    # Reduce to 4 — still above 2 parts, nothing should change
+    storage_svc.update_card_bag_count(slot_id=card1.id, bag_count=4)
+
+    from eurorack_inventory.repositories.parts import PartRepository
+    part_repo = PartRepository(db)
+    assert part_repo.get_part_by_id(p1.id).slot_id == card1.id
+    assert part_repo.get_part_by_id(p2.id).slot_id == card1.id
+
+
+def test_clone_binder(services) -> None:
+    """Cloning a binder should copy structure but not parts."""
+    storage_svc, inventory_svc, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder Cl", num_cards=3, bags_per_card=5)
+
+    # Assign a part to card 1
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    inventory_svc.upsert_part(name="IC 1", category="ICs", qty=1, slot_id=card1.id)
+
+    clone = storage_svc.clone_container(container.id, "Binder Cl Copy")
+
+    assert clone.container_type == ContainerType.BINDER.value
+    assert clone.metadata["bags_per_card"] == 5
+
+    clone_slots = storage_repo.list_slots_for_container(clone.id)
+    assert len(clone_slots) == 3
+    for slot in clone_slots:
+        assert slot.slot_type == SlotType.CARD.value
+        assert slot.metadata["bag_count"] == 5
+
+
+def test_binder_resize_shrink_preserves_lower_cards(services) -> None:
+    """Shrinking should only remove higher-numbered cards."""
+    storage_svc, inventory_svc, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder Sh", num_cards=5)
+
+    # Assign part to card 2 — should survive shrink to 3
+    card2 = storage_repo.get_slot_by_label(container.id, "Card 2")
+    inventory_svc.upsert_part(name="IC 1", category="ICs", qty=1, slot_id=card2.id)
+
+    storage_svc.resize_binder(container_id=container.id, new_num_cards=3)
+
+    slots = storage_repo.list_slots_for_container(container.id)
+    assert len(slots) == 3
+    labels = [s.label for s in slots]
+    assert "Card 2" in labels
+    assert "Card 4" not in labels
+    assert "Card 5" not in labels
+
+
+def test_binder_individual_card_bag_counts(services) -> None:
+    """Each card can have its own bag count independent of others."""
+    storage_svc, _, storage_repo, _ = services
+    container = storage_svc.configure_binder(name="Binder IC", num_cards=3, bags_per_card=4)
+
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    card2 = storage_repo.get_slot_by_label(container.id, "Card 2")
+    card3 = storage_repo.get_slot_by_label(container.id, "Card 3")
+
+    storage_svc.update_card_bag_count(slot_id=card1.id, bag_count=2)
+    storage_svc.update_card_bag_count(slot_id=card3.id, bag_count=10)
+
+    card1 = storage_repo.get_slot_by_label(container.id, "Card 1")
+    card2 = storage_repo.get_slot_by_label(container.id, "Card 2")
+    card3 = storage_repo.get_slot_by_label(container.id, "Card 3")
+
+    assert card1.metadata["bag_count"] == 2
+    assert card2.metadata["bag_count"] == 4  # unchanged
+    assert card3.metadata["bag_count"] == 10

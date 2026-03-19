@@ -693,18 +693,20 @@ class StorageScreen(QWidget):
                 self.slot_table.setItem(row_idx, 1, QTableWidgetItem(part.category or ""))
                 self.slot_table.setItem(row_idx, 2, QTableWidgetItem(str(part.qty)))
         elif is_binder:
-            self.slot_table.setColumnCount(4)
-            self.slot_table.setHorizontalHeaderLabels(["Card", "Bags", "Parts", "Notes"])
+            self.slot_table.setColumnCount(5)
+            self.slot_table.setHorizontalHeaderLabels(["Card", "Bags", "Used", "Available", "Parts"])
             self.slot_table.setRowCount(len(slots))
             for row_idx, slot in enumerate(slots):
+                bag_count = slot.metadata.get("bag_count", 4)
+                used = len(self._slot_parts.get(slot.id, []))
+                available = max(0, bag_count - used)
                 self.slot_table.setItem(row_idx, 0, QTableWidgetItem(slot.label))
-                self.slot_table.setItem(row_idx, 1, QTableWidgetItem(
-                    str(slot.metadata.get("bag_count", ""))
-                ))
-                self.slot_table.setItem(row_idx, 2, QTableWidgetItem(
+                self.slot_table.setItem(row_idx, 1, QTableWidgetItem(str(bag_count)))
+                self.slot_table.setItem(row_idx, 2, QTableWidgetItem(str(used)))
+                self.slot_table.setItem(row_idx, 3, QTableWidgetItem(str(available)))
+                self.slot_table.setItem(row_idx, 4, QTableWidgetItem(
                     self._parts_summary(slot.id)
                 ))
-                self.slot_table.setItem(row_idx, 3, QTableWidgetItem(slot.notes or ""))
         elif is_grid:
             self.slot_table.setColumnCount(6)
             self.slot_table.setHorizontalHeaderLabels(["Label", "Type", "Size", "Length", "Part", "Notes"])
@@ -830,8 +832,8 @@ class StorageScreen(QWidget):
         card_slots.sort(key=lambda s: s.ordinal or 0)
 
         self.grid_table.setRowCount(max(1, len(card_slots)))
-        self.grid_table.setColumnCount(3)
-        self.grid_table.setHorizontalHeaderLabels(["Card", "Bags", "Parts"])
+        self.grid_table.setColumnCount(4)
+        self.grid_table.setHorizontalHeaderLabels(["Card", "Bags", "Available", "Parts"])
         self.grid_table.setVerticalHeaderLabels([""] * max(1, len(card_slots)))
         if card_slots:
             for row, slot in enumerate(card_slots):
@@ -840,15 +842,21 @@ class StorageScreen(QWidget):
                 label_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 label_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
                 self.grid_table.setItem(row, 0, label_item)
-                bag_count = slot.metadata.get("bag_count", "")
+                bag_count = slot.metadata.get("bag_count", 4)
+                used = len(self._slot_parts.get(slot.id, []))
+                available = max(0, bag_count - used)
                 bag_item = QTableWidgetItem(f"{bag_count} bags")
                 bag_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 bag_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
                 self.grid_table.setItem(row, 1, bag_item)
+                avail_item = QTableWidgetItem(f"{available} free")
+                avail_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                avail_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
+                self.grid_table.setItem(row, 2, avail_item)
                 parts_item = QTableWidgetItem(self._parts_summary(slot.id))
                 parts_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 parts_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
-                self.grid_table.setItem(row, 2, parts_item)
+                self.grid_table.setItem(row, 3, parts_item)
         else:
             self.grid_table.setItem(0, 0, QTableWidgetItem("No cards yet"))
 
