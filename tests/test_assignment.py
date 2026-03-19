@@ -364,8 +364,8 @@ class TestSlotTypeMatching:
         ic_updated = part_repo.get_part_by_id(p_ic.id)
         assert ic_updated.slot_id is not None
 
-    def test_through_hole_resistors_not_assigned_to_small_cells(self, ctx):
-        """Through-hole resistors need long cells; they should NOT fit in small/short cells."""
+    def test_through_hole_resistors_cannot_go_in_small_cells(self, ctx):
+        """Through-hole resistors (long parts) cannot fit in small cells."""
         assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
 
         # Box with only small/short cells
@@ -378,7 +378,6 @@ class TestSlotTypeMatching:
         result = assignment_svc.assign("incremental", AssignmentScope())
         assert result.assigned_count == 0
         assert result.unassigned_count == 1
-        assert result.estimate.long_cells_needed == 1
 
     def test_through_hole_diodes_go_to_long_cells(self, ctx):
         assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
@@ -808,8 +807,8 @@ class TestFallbackPlacement:
         updated = part_repo.get_part_by_id(p.id)
         assert updated.slot_id is not None
 
-    def test_binder_part_forbidden_from_large_cell(self, ctx):
-        """IC with only large cells → unassigned (large cell is forbidden)."""
+    def test_binder_part_falls_back_to_large_cell(self, ctx):
+        """IC with only large cells → placed with penalty (fallback)."""
         assignment_svc, storage_svc, inventory_svc, _, storage_repo, _ = ctx
 
         container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
@@ -819,11 +818,11 @@ class TestFallbackPlacement:
         inventory_svc.upsert_part(name="TL072 SOIC-8", category="ICs", qty=2)
 
         result = assignment_svc.assign("incremental", AssignmentScope())
-        assert result.assigned_count == 0
-        assert result.unassigned_count == 1
+        assert result.assigned_count == 1
+        assert result.unassigned_count == 0
 
-    def test_large_part_forbidden_from_small_cell(self, ctx):
-        """Large part with only small cells → unassigned."""
+    def test_large_part_cannot_fit_in_small_cell(self, ctx):
+        """Large part with only small cells → cannot be assigned."""
         assignment_svc, storage_svc, inventory_svc, _, _, _ = ctx
 
         storage_svc.configure_grid_box(name="Box 1", rows=2, cols=2)
@@ -834,8 +833,8 @@ class TestFallbackPlacement:
         assert result.assigned_count == 0
         assert result.unassigned_count == 1
 
-    def test_long_part_falls_back_to_large_cell(self, ctx):
-        """Through-hole resistor with no long cells but large cell → placed there."""
+    def test_long_part_cannot_fit_in_large_only_cell(self, ctx):
+        """Through-hole resistor with no long cells, only large → cannot be assigned."""
         assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
 
         container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
@@ -843,6 +842,40 @@ class TestFallbackPlacement:
         storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
 
         p = inventory_svc.upsert_part(name="10K 1/4W", category="Resistors", qty=50)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 0
+        assert result.unassigned_count == 1
+
+    def test_long_part_fits_in_long_cell(self, ctx):
+        """Through-hole resistor goes to long cell (which is large by definition)."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(
+            slot_id=slots[0].id, cell_size="large", cell_length="long",
+        )
+
+        p = inventory_svc.upsert_part(name="10K 1/4W", category="Resistors", qty=50)
+
+        result = assignment_svc.assign("incremental", AssignmentScope())
+        assert result.assigned_count == 1
+
+        updated = part_repo.get_part_by_id(p.id)
+        assert updated.slot_id == slots[0].id
+
+    def test_large_part_fits_in_long_cell(self, ctx):
+        """Large part can go in a long cell (long is also large)."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, storage_repo, _ = ctx
+
+        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
+        slots = storage_repo.list_slots_for_container(container.id)
+        storage_svc.update_cell_properties(
+            slot_id=slots[0].id, cell_size="large", cell_length="long",
+        )
+
+        p = inventory_svc.upsert_part(name="Toggle Switch", category="Switches", qty=5)
 
         result = assignment_svc.assign("incremental", AssignmentScope())
         assert result.assigned_count == 1
@@ -952,18 +985,28 @@ class TestScarcityOrdering:
 
 class TestUnassignedReasons:
     def test_reason_no_compatible_slot(self, ctx):
-        """Binder part with only large cells → reason explains no compatible type."""
+        """Long part with only small cells → reason explains no compatible type."""
         assignment_svc, storage_svc, inventory_svc, _, storage_repo, _ = ctx
 
-        container = storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
-        slots = storage_repo.list_slots_for_container(container.id)
-        storage_svc.update_cell_properties(slot_id=slots[0].id, cell_size="large")
+        storage_svc.configure_grid_box(name="Box 1", rows=1, cols=1)
 
-        p = inventory_svc.upsert_part(name="TL072 SOIC-8", category="ICs", qty=2)
+        p = inventory_svc.upsert_part(name="10K 1/4W", category="Resistors", qty=50)
 
         plan = assignment_svc.plan("incremental", AssignmentScope())
         assert p.id in plan.unassigned_part_ids
         assert plan.reason_for(p.id) == "no compatible slot type exists"
+
+    def test_large_part_goes_to_binder(self, ctx):
+        """Large part with only binder cards → assigned (binders have no restrictions)."""
+        assignment_svc, storage_svc, inventory_svc, part_repo, _, _ = ctx
+
+        storage_svc.configure_binder(name="Binder 1", num_cards=1)
+
+        p = inventory_svc.upsert_part(name="Toggle Switch", category="Switches", qty=5)
+
+        plan = assignment_svc.plan("incremental", AssignmentScope())
+        assert len(plan.assignments) == 1
+        assert p.id not in plan.unassigned_part_ids
 
     def test_reason_all_full(self, ctx):
         """2 small parts, 1 small cell → second part gets 'all compatible slots are full'."""

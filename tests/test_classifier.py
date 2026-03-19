@@ -229,7 +229,7 @@ class TestCompatibilityMatrix:
         assert compat.penalty_for(StorageClass.SMALL_SHORT_CELL) == 0.0
         assert compat.penalty_for(StorageClass.LARGE_CELL) == 0.3
         assert compat.penalty_for(StorageClass.LONG_CELL) == 0.5
-        assert compat.penalty_for(StorageClass.BINDER_CARD) is None
+        assert compat.penalty_for(StorageClass.BINDER_CARD) == 0.8
 
     def test_large_cell_preferred(self):
         part = _make_part(name="Toggle Switch", category="Switches")
@@ -240,9 +240,10 @@ class TestCompatibilityMatrix:
         part = _make_part(name="Toggle Switch", category="Switches")
         compat = classify_part_compat(part)
         assert compat.penalty_for(StorageClass.LARGE_CELL) == 0.0
-        assert compat.penalty_for(StorageClass.LONG_CELL) == 0.4
+        assert compat.penalty_for(StorageClass.LONG_CELL) == 0.3
+        assert compat.penalty_for(StorageClass.BINDER_CARD) == 0.8
+        # Large parts cannot fit in small cells
         assert compat.penalty_for(StorageClass.SMALL_SHORT_CELL) is None
-        assert compat.penalty_for(StorageClass.BINDER_CARD) is None
 
     def test_long_cell_preferred(self):
         part = _make_part(name="10K Resistor", category="Resistors", qty=50)
@@ -253,9 +254,10 @@ class TestCompatibilityMatrix:
         part = _make_part(name="10K Resistor", category="Resistors", qty=50)
         compat = classify_part_compat(part)
         assert compat.penalty_for(StorageClass.LONG_CELL) == 0.0
-        assert compat.penalty_for(StorageClass.LARGE_CELL) == 0.3
+        assert compat.penalty_for(StorageClass.BINDER_CARD) == 0.8
+        # Long parts cannot fit in large-only or small cells
+        assert compat.penalty_for(StorageClass.LARGE_CELL) is None
         assert compat.penalty_for(StorageClass.SMALL_SHORT_CELL) is None
-        assert compat.penalty_for(StorageClass.BINDER_CARD) is None
 
     def test_binder_card_preferred(self):
         part = _make_part(name="TL072 SOIC-8", category="ICs")
@@ -267,8 +269,8 @@ class TestCompatibilityMatrix:
         compat = classify_part_compat(part)
         assert compat.penalty_for(StorageClass.BINDER_CARD) == 0.0
         assert compat.penalty_for(StorageClass.SMALL_SHORT_CELL) == 0.6
-        assert compat.penalty_for(StorageClass.LARGE_CELL) is None
-        assert compat.penalty_for(StorageClass.LONG_CELL) is None
+        assert compat.penalty_for(StorageClass.LARGE_CELL) == 0.8
+        assert compat.penalty_for(StorageClass.LONG_CELL) == 0.9
 
     def test_compatible_classes_order(self):
         part = _make_part(name="100nF 0805", category="Capacitors", qty=10)
@@ -277,7 +279,7 @@ class TestCompatibilityMatrix:
         assert classes[0] == StorageClass.SMALL_SHORT_CELL  # preferred first
         assert StorageClass.LARGE_CELL in classes
         assert StorageClass.LONG_CELL in classes
-        assert StorageClass.BINDER_CARD not in classes
+        assert StorageClass.BINDER_CARD in classes  # last-resort fallback
 
     def test_classify_part_compat_respects_override(self):
         part = _make_part(name="Custom Part", category="Misc")

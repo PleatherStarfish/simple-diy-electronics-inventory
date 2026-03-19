@@ -39,28 +39,44 @@ class PartCompatibility:
 
 
 _COMPAT_MATRIX: dict[StorageClass, PartCompatibility] = {
+    # Small parts: fit anywhere
     StorageClass.SMALL_SHORT_CELL: PartCompatibility(
         preferred=StorageClass.SMALL_SHORT_CELL,
         acceptable=(
             (StorageClass.LARGE_CELL, 0.3),
             (StorageClass.LONG_CELL, 0.5),
+            (StorageClass.BINDER_CARD, 0.8),
         ),
-        forbidden=frozenset({StorageClass.BINDER_CARD}),
+        forbidden=frozenset(),
     ),
+    # Large parts: large or long cells (long is large by definition), or binders.
+    # Cannot fit in small cells.
     StorageClass.LARGE_CELL: PartCompatibility(
         preferred=StorageClass.LARGE_CELL,
-        acceptable=((StorageClass.LONG_CELL, 0.4),),
-        forbidden=frozenset({StorageClass.BINDER_CARD, StorageClass.SMALL_SHORT_CELL}),
+        acceptable=(
+            (StorageClass.LONG_CELL, 0.3),
+            (StorageClass.BINDER_CARD, 0.8),
+        ),
+        forbidden=frozenset({StorageClass.SMALL_SHORT_CELL}),
     ),
+    # Long parts: only long cells or binders.
+    # Cannot fit in small cells or large-only cells (not long enough).
     StorageClass.LONG_CELL: PartCompatibility(
         preferred=StorageClass.LONG_CELL,
-        acceptable=((StorageClass.LARGE_CELL, 0.3),),
-        forbidden=frozenset({StorageClass.BINDER_CARD, StorageClass.SMALL_SHORT_CELL}),
+        acceptable=(
+            (StorageClass.BINDER_CARD, 0.8),
+        ),
+        forbidden=frozenset({StorageClass.SMALL_SHORT_CELL, StorageClass.LARGE_CELL}),
     ),
+    # Binder parts: binders preferred, but no restriction on where they can go
     StorageClass.BINDER_CARD: PartCompatibility(
         preferred=StorageClass.BINDER_CARD,
-        acceptable=((StorageClass.SMALL_SHORT_CELL, 0.6),),
-        forbidden=frozenset({StorageClass.LARGE_CELL, StorageClass.LONG_CELL}),
+        acceptable=(
+            (StorageClass.SMALL_SHORT_CELL, 0.6),
+            (StorageClass.LARGE_CELL, 0.8),
+            (StorageClass.LONG_CELL, 0.9),
+        ),
+        forbidden=frozenset(),
     ),
 }
 

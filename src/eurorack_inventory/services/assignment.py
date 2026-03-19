@@ -91,10 +91,11 @@ def _slot_to_storage_class(slot: StorageSlot) -> StorageClass | None:
         cell_size = slot.metadata.get("cell_size", CellSize.SMALL.value)
         cell_length = slot.metadata.get("cell_length", CellLength.SHORT.value)
 
-        if cell_size == CellSize.LARGE.value:
-            return StorageClass.LARGE_CELL
+        # Long cells are large by definition — check length first
         if cell_length == CellLength.LONG.value:
             return StorageClass.LONG_CELL
+        if cell_size == CellSize.LARGE.value:
+            return StorageClass.LARGE_CELL
         return StorageClass.SMALL_SHORT_CELL
 
     return None
