@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from eurorack_inventory.domain.enums import CellLength, CellSize, ContainerType, SlotType
+from eurorack_inventory.domain.enums import CellLength, CellSize, ContainerType, SlotType, StorageClass
 from eurorack_inventory.domain.models import StorageContainer, StorageSlot
 from eurorack_inventory.domain.storage import (
     GridRegion,
@@ -540,7 +540,45 @@ class StorageService:
             message=f"Updated cell properties for {slot.label}",
             payload={"cell_size": cell_size, "cell_length": cell_length},
         )
+        self._unassign_incompatible_parts(updated)
         return updated
+
+    def _unassign_incompatible_parts(self, slot: StorageSlot) -> None:
+        """Unassign any parts that no longer fit after a cell property change."""
+        if self.part_repo is None:
+            return
+        from eurorack_inventory.services.classifier import classify_part_compat
+
+        slot_class = self._slot_storage_class(slot)
+        if slot_class is None:
+            return
+        parts_map = self.part_repo.list_parts_by_slot_ids([slot.id])
+        for part in parts_map.get(slot.id, []):
+            compat = classify_part_compat(part)
+            if compat.penalty_for(slot_class) is None:
+                self.part_repo.update_part(part.id, slot_id=None)
+                self.audit_repo.add_event(
+                    event_type="part.auto_unassigned",
+                    entity_type="part",
+                    entity_id=part.id,
+                    message=f"Auto-unassigned {part.name}: no longer fits in {slot.label}",
+                    payload={"slot_id": slot.id, "slot_label": slot.label},
+                )
+
+    @staticmethod
+    def _slot_storage_class(slot: StorageSlot) -> StorageClass | None:
+        """Map a storage slot to its StorageClass."""
+        if slot.slot_type == SlotType.CARD.value:
+            return StorageClass.BINDER_CARD
+        if slot.slot_type == SlotType.GRID_REGION.value:
+            cs = slot.metadata.get("cell_size", CellSize.SMALL.value)
+            cl = slot.metadata.get("cell_length", CellLength.SHORT.value)
+            if cl == CellLength.LONG.value:
+                return StorageClass.LONG_CELL
+            if cs == CellSize.LARGE.value:
+                return StorageClass.LARGE_CELL
+            return StorageClass.SMALL_SHORT_CELL
+        return None
 
     def resize_grid_box(
         self,

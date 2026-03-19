@@ -3,13 +3,30 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+from eurorack_inventory.domain.enums import CellLength, CellSize, SlotType, StorageClass
 from eurorack_inventory.domain.models import Part, PartAlias, PartDetail
 from eurorack_inventory.repositories.audit import AuditRepository
 from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
+from eurorack_inventory.services.classifier import classify_part_compat
 from eurorack_inventory.services.common import make_part_fingerprint, normalize_text
 
 logger = logging.getLogger(__name__)
+
+
+def _slot_to_storage_class(slot) -> StorageClass | None:
+    """Map a storage slot to its StorageClass based on type and metadata."""
+    if slot.slot_type == SlotType.CARD.value:
+        return StorageClass.BINDER_CARD
+    if slot.slot_type == SlotType.GRID_REGION.value:
+        cell_size = slot.metadata.get("cell_size", CellSize.SMALL.value)
+        cell_length = slot.metadata.get("cell_length", CellLength.SHORT.value)
+        if cell_length == CellLength.LONG.value:
+            return StorageClass.LONG_CELL
+        if cell_size == CellSize.LARGE.value:
+            return StorageClass.LARGE_CELL
+        return StorageClass.SMALL_SHORT_CELL
+    return None
 
 
 class InventoryService:
@@ -74,7 +91,33 @@ class InventoryService:
             message=f"Updated part {updated.name}",
             payload={"fields": list(fields.keys())},
         )
+        # If the part's storage class changed, check whether it still fits
+        if "storage_class_override" in fields and updated.slot_id is not None:
+            self._unassign_if_incompatible(updated)
         return updated
+
+    def _unassign_if_incompatible(self, part: Part) -> None:
+        """Unassign part from its slot if the slot's storage class is forbidden."""
+        if part.slot_id is None:
+            return
+        slot = self.storage_repo.get_slot(part.slot_id)
+        if slot is None:
+            return
+        slot_class = _slot_to_storage_class(slot)
+        if slot_class is None:
+            return
+        compat = classify_part_compat(part)
+        if compat.penalty_for(slot_class) is None:
+            # Forbidden — move to unassigned
+            self.part_repo.update_part(part.id, slot_id=None)
+            part.slot_id = None
+            self.audit_repo.add_event(
+                event_type="part.auto_unassigned",
+                entity_type="part",
+                entity_id=part.id,
+                message=f"Auto-unassigned {part.name}: no longer fits in {slot.label}",
+                payload={"slot_id": slot.id, "slot_label": slot.label},
+            )
 
     def delete_part(self, part_id: int) -> None:
         """Delete a part. Raises ValueError if part is used in a BOM."""
