@@ -1,271 +1,30 @@
 # Simple DIY Electronics Inventory
 
-Simple DIY Electronics Inventory is a local-first desktop app for tracking DIY electronics parts, their physical storage locations, and the inventory needed for module builds. It is implemented in Python with a PySide6 GUI and a single SQLite database file, so there is no server, no cloud account, and no separate backend to deploy.
+A free, offline desktop app for organizing your DIY electronics parts. Track what you have, where it lives, and whether you have enough to build your next project — all without an internet connection or cloud account.
 
-This repository contains both the desktop application and the core logic for importing spreadsheets, fuzzy searching parts, modeling physical storage, planning storage assignments, and checking project/BOM availability.
+Simple DIY Electronics Inventory runs on your Mac as a standalone app (or from source on Mac/Linux). Your data stays in a single local file on your machine, so there is nothing to sign up for, no subscription, and no server to maintain.
 
-## What the app is for
+## Who is this for?
 
-The project is designed around a practical workshop workflow:
+- **Synth builders and electronics hobbyists** who accumulate resistors, capacitors, ICs, and other components across multiple storage containers
+- **Workshop organizers** who want to know at a glance what they have, where it is, and what they need to buy
+- **BOM checkers** who want to import a bill of materials and instantly see which parts are in stock and which need ordering
 
-- keep one canonical record for each part
-- know how many of that part you currently have
-- know where that part physically lives
-- quickly find parts by name, alias, package, or supplier SKU
-- estimate whether a project can be built from current stock
-- reduce manual sorting by auto-assigning unplaced parts into available storage
+## Quick start
 
-## Current implementation scope
-
-The codebase is already useful, but it is important to describe its current implementation precisely:
-
-- Each part currently stores a single integer `qty` and one optional `slot_id`. Earlier stock-lot ideas still appear in older comments and migration history, but the active schema stores quantity and location directly on the `parts` table.
-- The UI currently creates and edits grid boxes and binders, plus an automatic fallback container named `Unassigned` with a `Main` slot. The domain model and database also allow generic bins and drawers.
-- The Projects tab supports browsing, availability display, build creation, and renaming. Projects can also be created by promoting a fully verified BOM from the BOMs tab.
-- The CLI accepts `--import-mode replace_snapshot` and `--import-mode merge_quantities`. In the current importer implementation, both values are validated and recorded in audit data, but row handling is the same for both modes.
-
-## User-facing features
-
-### Inventory
-
-- List all parts in a searchable table
-- Edit key fields inline: name, category, quantity, package, location, and supplier SKU
-- Create and edit parts with richer metadata: manufacturer, MPN, supplier name, purchase URL, notes, and storage-class override
-- Adjust quantity with quick `+1`, `-1`, `+10`, and `-10` controls
-- Add search aliases for alternate part names
-- Jump from a selected part directly to its storage location
-- Prevent deleting a part that is still referenced by a project BOM
-
-### Storage
-
-- Create storage containers for:
-  - grid boxes with row/column metadata
-  - binders with numbered cards
-  - the default `Unassigned / Main` fallback slot
-- Display storage visually in the Storage tab
-- Merge multiple empty grid cells into one contiguous rectangular region
-- Unmerge previously merged regions back into individual cells
-- Resize grid boxes and binders with validation to avoid losing occupied slots
-- Drag a part from one storage compartment to another
-- If a part is dropped onto an occupied slot, the displaced part is automatically moved to `Unassigned / Main`
-- Delete empty containers with an explicit typed confirmation challenge
-- Show per-container utilization counts
-
-### Auto-assignment
-
-- Preview assignments before applying them
-- Run in either:
-  - `incremental` mode, which only assigns currently unassigned parts
-  - `full_rebuild` mode, which clears and recomputes assignments for the selected scope
-- Scope runs to:
-  - all parts
-  - currently selected parts
-  - a single category
-- Store every assignment run in the database so the latest run can be undone
-- Report estimated additional storage needed when there are not enough matching slots
-
-### BOMs
-
-- Import and normalize bills of materials in a dedicated BOMs tab
-- Edit normalized items inline: component type, value, quantity, and package hint
-- Filter the normalized table by match status: all, matched, or unmatched
-- Match BOM items to existing inventory parts with fuzzy search scoring and match-reason display
-- Create new inventory parts directly from unmatched BOM items, pre-populated with BOM metadata
-- Skip items that do not need matching
-- Re-normalize a BOM after editing raw items
-- Issues banner highlights problems such as high dropout rates, unmatched items, or missing source files
-- Promote a fully verified BOM to a project for build tracking (all items must be verified first)
-- Generate a shopping list from one or more selected BOMs showing quantities needed, available, and to buy
-- Copy the shopping list to clipboard or export it as CSV
-
-### Projects and builds
-
-- Display stored projects in a dedicated Projects tab
-- Show project maker, revision, and notes
-- Rename projects via context menu
-- Calculate part availability by comparing BOM requirements with current inventory quantities
-- Create build instances for a project with an optional nickname
-- Persist build records in the database
-
-### Search
-
-- Use RapidFuzz-based fuzzy search over:
-  - canonical part names
-  - aliases
-  - categories
-  - supplier SKUs
-  - default package names
-- Favor exact and substring matches with source-specific weighting
-- Hydrate final search results from SQLite after ranking in memory
-
-### Import and audit visibility
-
-- Import an existing Excel inventory workbook
-- Automatically create searchable aliases during import
-- Persist audit events for part edits, moves, imports, assignments, and storage changes
-- Show recent audit events in a dockable panel
-- Capture runtime logs in memory and in rotating log files, with a dockable runtime log viewer
-
-## How the current implementation works
-
-### Application startup
-
-`python -m eurorack_inventory` enters through `src/eurorack_inventory/main.py`, which:
-
-1. parses CLI arguments
-2. resolves the database path
-3. builds an application context
-4. applies SQLite migrations
-5. configures logging
-6. constructs repositories and services
-7. ensures the default `Unassigned / Main` location exists
-8. rebuilds the in-memory search index
-9. launches the PySide6 main window unless `--headless-import` was requested
-
-### Persistence model
-
-The app uses a single SQLite database file. The connection wrapper enables:
-
-- foreign keys
-- WAL journal mode
-- `synchronous = NORMAL`
-
-Schema changes are tracked by numbered SQL migrations in `src/eurorack_inventory/db/migrations/`, applied via `PRAGMA user_version`.
-
-### Core database objects
-
-| Concept | Stored as | Purpose |
-| --- | --- | --- |
-| Part | `parts` | Canonical component record with metadata, `qty`, optional `slot_id`, and optional `storage_class_override` |
-| Alias | `part_aliases` | Extra searchable names tied to a part |
-| Storage container | `storage_containers` | Named physical container with type and JSON metadata |
-| Storage slot | `storage_slots` | Individual compartment or merged region inside a container |
-| Project | `modules` | Build target; the service/UI calls these "projects" |
-| BOM line | `bom_lines` | Required quantity of a part for a project |
-| Build | `builds` | A concrete build instance of a project |
-| Build update | `build_updates` | Status or note entries for a build |
-| Setting | `settings` | Stored JSON/text configuration such as classifier thresholds |
-| Audit event | `audit_events` | Append-only record of user-visible changes |
-| Assignment run | `assignment_runs` | Stored plan and pre-run snapshot for undo |
-
-There is also a SQL view named `part_inventory_summary` used for fast inventory-table hydration.
-
-### Repository and service layers
-
-The project is intentionally split into explicit layers:
-
-- `db/`
-  - SQLite connection management and migration runner
-- `domain/`
-  - dataclasses, enums, and pure storage/grid geometry helpers
-- `repositories/`
-  - direct SQL access for parts, storage, projects, and audit events
-- `services/`
-  - business logic such as inventory editing, import, search, storage configuration, auto-assignment, dashboard counts, and settings
-- `ui/`
-  - PySide6 screens, dialogs, Qt models, and app styling
-
-This keeps most business rules outside the UI, which makes the service layer testable without launching the desktop app.
-
-### Search implementation
-
-The search index is built in memory from repository data:
-
-- one candidate for normalized part name
-- optional candidates for category, supplier SKU, and package
-- one candidate per alias
-
-Search uses `rapidfuzz.fuzz.WRatio` with:
-
-- a large bonus for exact normalized matches
-- a smaller bonus for substring matches
-- an additional bonus when all query tokens appear in the candidate text
-- source weights so names and aliases matter more than category or package matches
-
-Only results above the minimum score threshold are returned. The final part IDs are then reloaded through the repository and shown via `part_inventory_summary`.
-
-### Storage implementation
-
-Storage is modeled generically, but the current UI focuses on two container types:
-
-- `grid_box`
-- `binder`
-
-Grid slots can have coordinates and can represent either single cells or merged rectangular regions. The storage service validates that:
-
-- a grid region stays within container bounds
-- merged cells form a contiguous rectangle
-- merged or removed cells do not contain stock
-- shrinking a grid does not cut through an existing merged cell
-
-Slot metadata is used to distinguish:
-
-- small vs large cells
-- short vs long cells
-- binder card bag counts
-
-### Auto-assignment implementation
-
-Auto-assignment is a two-step system:
-
-1. `plan()`
-   - gathers parts for the requested scope
-   - classifies each part into a storage class
-   - gathers currently available slots by storage class
-   - packs parts into slots using a category-affinity first-fit strategy
-   - estimates additional storage requirements for leftover parts
-2. `apply_plan()`
-   - optionally clears existing slot assignments for `full_rebuild`
-   - writes new slot assignments
-   - stores the run, plan, and original snapshot in `assignment_runs`
-
-Undo restores the saved snapshot, but intentionally leaves alone any part that has been manually moved since the assignment run.
-
-The classifier currently assigns parts into four storage classes:
-
-- `small_short_cell`
-- `large_cell`
-- `long_cell`
-- `binder_card`
-
-Classification is based on regex matching against part names/categories plus quantity thresholds, and users can override the storage class per part.
-
-### Spreadsheet import implementation
-
-The importer expects an Excel sheet named `Consolidated Inventory`.
-
-The current implementation reads these columns:
-
-- `Category`
-- `Component`
-- `Total Qty`
-- `Tayda SKU`
-- `Merged From`
-
-Import behavior today:
-
-- rows with a blank component name are skipped
-- rows with missing, invalid, or non-positive quantities are skipped and reported as warnings
-- imported parts are upserted into the database
-- imported parts are placed in `Unassigned / Main`
-- an alias of `<component> <category>` is added when a category is present
-- an alias matching the Tayda SKU is added when present
-- other spreadsheet columns are currently ignored by the importer
-
-## Installation
-
-### macOS standalone app
+### macOS app (easiest)
 
 1. Download the latest `.dmg` from [GitHub Releases](https://github.com/danielmiller/simple-diy-electronics-inventory/releases).
-2. Drag **Simple DIY Electronics Inventory** into `Applications`.
-3. Launch it from `Applications`.
-4. Signed releases should open normally. If you are testing an older ad-hoc build, macOS may require `right-click -> Open` or `Privacy & Security -> Open Anyway`.
+2. Drag **Simple DIY Electronics Inventory** into your Applications folder.
+3. Launch it from Applications.
 
-### From source
+> Signed releases should open normally. If macOS blocks an older build, right-click the app and choose **Open**, or go to **System Settings > Privacy & Security > Open Anyway**.
+
+### From source (Mac or Linux)
 
 Requires Python 3.11 or newer.
 
-Recommended with `uv`:
+Using [uv](https://docs.astral.sh/uv/) (recommended):
 
 ```bash
 git clone https://github.com/danielmiller/simple-diy-electronics-inventory.git
@@ -274,7 +33,7 @@ uv sync --dev
 uv run python -m eurorack_inventory
 ```
 
-Traditional virtualenv setup:
+Using pip:
 
 ```bash
 git clone https://github.com/danielmiller/simple-diy-electronics-inventory.git
@@ -285,52 +44,101 @@ pip install -e ".[dev]"
 python -m eurorack_inventory
 ```
 
-Base runtime dependencies:
+## What you can do with it
 
-- Python 3.11+
-- PySide6
-- RapidFuzz
-- pandas
-- openpyxl
+### Manage your parts inventory
 
-Development extras:
+- Browse all your parts in a searchable, sortable table
+- Edit part details inline: name, category, quantity, package, location, and supplier SKU
+- Add richer metadata: manufacturer, MPN, supplier name, purchase URL, notes
+- Adjust quantities quickly with `+1`, `-1`, `+10`, and `-10` buttons
+- Add search aliases so you can find parts by alternate names
+- Jump from a part directly to its storage location
+- Find and merge duplicate parts with a side-by-side comparison dialog that highlights conflicts and lets you pick which fields to keep
+- Bulk-normalize part names from the **Tools** menu to clean up inconsistent naming
 
-- pytest
-- PyInstaller
+### Organize physical storage
 
-## Running the app
+- Create storage containers: grid boxes with rows and columns, binders with numbered card slots, or custom bins
+- See your storage laid out visually — each container shows which parts are in which slots
+- Drag and drop parts between compartments
+- Merge multiple empty grid cells into larger regions for bigger components, and split them back apart later
+- Resize containers with validation so you never accidentally lose occupied slots
+- See utilization counts per container at a glance
 
-Basic launch:
+### Auto-assign parts to storage
 
-```bash
-python -m eurorack_inventory
-```
+Instead of manually sorting every component into a slot, let the app do it:
 
-Open a custom database file:
+- **Preview before applying** — see exactly what would go where before committing
+- Choose a mode: **incremental** (only place currently unassigned parts) or **full rebuild** (clear and recompute)
+- Choose a scope: all parts, a hand-picked selection, or a single category
+- Optionally target a specific container (e.g. "fill this binder box") with an optional quantity filter to prioritize parts above a threshold
+- Parts are classified by size and matched to compatible slots, with a flexible compatibility system that prefers ideal fits but allows alternatives
+- If a part's storage class changes, the app automatically unassigns it from any incompatible slot
+- Every assignment run is saved so you can **undo** it later
 
-```bash
-python -m eurorack_inventory --db ./my_inventory.db
-```
+### Import and check bills of materials (BOMs)
 
-Import a workbook and then launch the UI:
+- Import BOMs from Excel spreadsheets or PDF documents (PDF requires optional Java + tabula-py)
+- Normalize and edit BOM line items: component type, value, quantity, package
+- Match BOM items to your existing inventory with fuzzy search — see match scores and reasons
+- Create new inventory parts directly from unmatched BOM items, pre-filled with BOM data
+- Filter by match status: all, matched, or unmatched
+- Bulk-delete BOM sources you no longer need
+- Normalize BOM names automatically from the **Tools** menu (cleans up prefixes, suffixes, and formatting)
+- Promote a fully verified BOM to a project for build tracking
+- Generate a **shopping list** from one or more BOMs showing what you need, what you have, and what to buy — then copy it to clipboard or export as CSV
+
+### Track projects and builds
+
+- Browse your projects in a dedicated tab with maker, revision, and notes
+- See part availability at a glance: the app compares your BOM requirements with current stock
+- Create build instances with optional nicknames and track their status
+- Rename projects via right-click context menu
+
+### Search across everything
+
+- Type a few characters and the app searches across part names, aliases, categories, supplier SKUs, and package types
+- Fuzzy matching means you don't need exact spelling — close matches surface automatically
+- Results are ranked by relevance with bonuses for exact and substring matches
+
+### Back up and restore your data
+
+Your inventory lives in a single SQLite database file. The app provides two ways to protect it:
+
+**Database backup** (exact snapshot — best for disaster recovery):
+- From the app: **File > Export Backup...** / **File > Restore Backup...**
+- From the command line: `python -m eurorack_inventory --export-backup ~/Desktop/backup.db`
+
+**CSV export** (human-readable — great for sharing or spreadsheet editing):
+- From the app: **File > Export as CSV...** / **File > Import from CSV...**
+- From the command line: `python -m eurorack_inventory --export-csv ~/Desktop/data.zip`
+
+Restore always creates a safety copy of your current database first. CSV import replaces all data atomically and rolls back if any integrity check fails.
+
+### Import from an existing spreadsheet
+
+If you already track parts in Excel, you can import them directly:
 
 ```bash
 python -m eurorack_inventory --import ./parts_inventory.xlsx
 ```
 
-Run a headless import and exit:
+The importer reads columns for Category, Component, Total Qty, Tayda SKU, and Merged From. It automatically creates search aliases and places imported parts in the default Unassigned location.
 
-```bash
-python -m eurorack_inventory --import ./parts_inventory.xlsx --headless-import
-```
+## Default data locations
 
-Create the example containers defined by the current demo bootstrap:
+Your database is created automatically the first time you launch the app:
 
-```bash
-python -m eurorack_inventory --bootstrap-demo-storage
-```
+| Platform | Path |
+| --- | --- |
+| macOS | `~/Library/Application Support/Simple DIY Electronics Inventory/eurorack_inventory.db` |
+| Linux | `~/.local/share/simple-diy-electronics-inventory/eurorack_inventory.db` |
 
-## CLI reference
+Use `--db PATH` to open a different database file. Runtime logs are stored in a `logs/` folder next to the database.
+
+## Command-line reference
 
 ```bash
 python -m eurorack_inventory --help
@@ -339,115 +147,31 @@ python -m eurorack_inventory --help
 | Flag | Description |
 | --- | --- |
 | `--db PATH` | Path to the SQLite database file |
-| `--import PATH` | Import an Excel workbook before optionally launching the GUI |
-| `--import-mode {replace_snapshot,merge_quantities}` | Accepted import mode values; current importer behavior is the same for both |
+| `--import PATH` | Import an Excel workbook before launching the GUI |
+| `--import-mode {replace_snapshot,merge_quantities}` | Import strategy (both currently produce the same result) |
 | `--headless-import` | Run the import and exit without opening the GUI |
-| `--bootstrap-demo-storage` | Create the demo containers plus the default unassigned location |
-| `--export-backup PATH` | Export a full SQLite database backup to PATH and exit |
-| `--restore-backup PATH` | Restore the database from a SQLite backup file and exit |
+| `--bootstrap-demo-storage` | Create demo containers and the default Unassigned location |
+| `--export-backup PATH` | Export a full database backup and exit |
+| `--restore-backup PATH` | Restore the database from a backup file and exit |
 | `--export-csv PATH` | Export all data as CSV files in a zip archive and exit |
 | `--import-csv PATH` | Import data from a CSV zip archive (replaces all current data) and exit |
 
-## Backup and restore
+## Limitations
 
-The app provides two complementary ways to protect and export your data.
+- Each part stores a single quantity and one primary storage location. Splitting the same part across multiple locations is not yet supported.
+- The spreadsheet importer does not use location columns to auto-place parts.
+- BOM PDF import requires Java and the optional `tabula-py` dependency (`pip install -e ".[bom-pdf]"`).
+- The app supports importing and matching BOMs but does not yet support authoring a BOM from scratch.
 
-### SQLite backup (exact database snapshot)
+---
 
-This creates a byte-level copy of the database, preserving all tables, foreign keys, IDs, and migration state. Recommended for disaster recovery.
+## Technical details
 
-From the UI: **File > Export Backup...** and **File > Restore Backup...**
+The rest of this README covers architecture, build processes, and development setup for contributors.
 
-From the CLI:
+### Architecture overview
 
-```bash
-python -m eurorack_inventory --export-backup ~/Desktop/backup.db
-python -m eurorack_inventory --restore-backup ~/Desktop/backup.db
-```
-
-Restore always creates a safety copy of the current database before replacing it. The app closes after a UI restore so you can relaunch into the restored data.
-
-### CSV export and import (human-readable)
-
-This exports all tables as CSV files inside a zip archive. The archive can be opened, diffed, or edited in any spreadsheet tool.
-
-From the UI: **File > Export as CSV...** and **File > Import from CSV...**
-
-From the CLI:
-
-```bash
-python -m eurorack_inventory --export-csv ~/Desktop/data.zip
-python -m eurorack_inventory --import-csv ~/Desktop/data.zip
-```
-
-CSV import replaces all current data atomically. If any foreign-key violation is detected the import is rolled back and the database is left untouched.
-
-## Default filesystem locations
-
-If `--db` is not provided, the app creates its data under a platform-specific app-data directory.
-
-- macOS database:
-  - `~/Library/Application Support/Simple DIY Electronics Inventory/eurorack_inventory.db`
-- Linux database:
-  - `~/.local/share/simple-diy-electronics-inventory/eurorack_inventory.db`
-- Runtime logs:
-  - `<database directory>/logs/`
-
-## Building the macOS app
-
-The repository includes a PyInstaller spec and a helper build script.
-
-```bash
-pip install -e ".[dev]"
-bash scripts/build_macos.sh
-```
-
-The script currently:
-
-- removes `build/` and `dist/`
-- runs PyInstaller with `EurorackInventory.spec`
-- applies ad-hoc code signing by default for local builds
-- signs with a Developer ID identity when `APPLE_SIGNING_IDENTITY` is set
-- notarizes and staples the DMG when `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD` are set
-- optionally creates `dist/Simple DIY Electronics Inventory.dmg` if `create-dmg` is installed
-
-If needed:
-
-```bash
-brew install create-dmg
-```
-
-### Notarized GitHub releases
-
-To publish a macOS release that opens without Gatekeeper warnings, configure these GitHub Actions secrets:
-
-- `MACOS_CERTIFICATE_P12_BASE64`: Base64-encoded Developer ID Application certificate export
-- `MACOS_CERTIFICATE_PASSWORD`: Password for that `.p12`
-- `APPLE_SIGNING_IDENTITY`: Full signing identity, for example `Developer ID Application: Your Name (TEAMID)`
-- `APPLE_ID`: Apple ID email used for notarization
-- `APPLE_TEAM_ID`: Apple Developer team ID
-- `APPLE_APP_PASSWORD`: App-specific password for notarization
-
-Without those secrets, local builds will still work for development, but downloaded apps will be blocked by macOS Gatekeeper.
-
-## Running tests
-
-```bash
-pytest
-```
-
-The current test suite covers:
-
-- search behavior
-- inventory CRUD and reassignment
-- spreadsheet import
-- storage geometry and configuration
-- auto-assignment planning and undo behavior
-- classifier rules and settings persistence
-- BOM repository, service, extraction, and normalization
-- selected UI dialog and screen behavior
-
-## Repository layout
+The app is built in Python with a PySide6 (Qt) GUI and a single SQLite database. There is no server or network component.
 
 ```text
 src/eurorack_inventory/
@@ -457,7 +181,7 @@ src/eurorack_inventory/
   config.py            # database/log/resource paths
   db/                  # SQLite wrapper and SQL migrations
   domain/              # dataclasses, enums, storage geometry helpers
-  repositories/        # SQL-backed repositories
+  repositories/        # SQL-backed data access
   services/            # business logic
   ui/                  # PySide6 screens, dialogs, and models
   resources/           # icons and app resources
@@ -465,13 +189,104 @@ tests/                 # pytest suite
 scripts/               # build helpers
 ```
 
-## Practical limitations to know about
+The codebase is split into explicit layers:
 
-- One part currently maps to one stored quantity and one primary location. If you need the same part split across multiple physical locations, that is not yet modeled in the active schema.
-- The importer does not currently use spreadsheet location columns to place parts automatically.
-- The demo bootstrap creates named example containers, but it is not a full sample dataset with seeded part assignments.
-- The main desktop UI supports BOM import, matching, and promotion to projects, but does not yet support manually authoring a BOM from scratch.
+- **db/** — SQLite connection management and migration runner
+- **domain/** — dataclasses, enums, and pure storage/grid geometry helpers
+- **repositories/** — direct SQL access for parts, storage, projects, and audit events
+- **services/** — business logic (inventory, import, search, storage, auto-assignment, BOM extraction, classifier, settings)
+- **ui/** — PySide6 screens, dialogs, Qt models, and styling
 
-## Summary
+This separation keeps business rules outside the UI and makes the service layer testable without launching the desktop app.
 
-This project is a desktop-first inventory system with explicit storage modeling, a pragmatic service-layer architecture, and enough implementation depth to support real workshop use today. Its strongest current areas are local persistence, storage visualization, fuzzy part search, spreadsheet import, and storage auto-assignment. The code is structured so that richer project workflows, storage behaviors, and import logic can continue to grow without requiring a backend rewrite.
+### Database schema
+
+The app uses a single SQLite file with WAL journal mode and foreign keys enabled. Schema changes are tracked by numbered SQL migrations applied via `PRAGMA user_version`.
+
+| Table | Purpose |
+| --- | --- |
+| `parts` | Canonical component record with metadata, qty, optional slot, and storage class override |
+| `part_aliases` | Extra searchable names tied to a part |
+| `storage_containers` | Named physical container with type and JSON metadata |
+| `storage_slots` | Individual compartment or merged region inside a container |
+| `modules` | Build target (called "projects" in the UI) |
+| `bom_lines` | Required quantity of a part for a project |
+| `builds` | Concrete build instance of a project |
+| `build_updates` | Status or note entries for a build |
+| `settings` | Stored JSON/text configuration such as classifier thresholds |
+| `audit_events` | Append-only record of user-visible changes |
+| `assignment_runs` | Stored plan and pre-run snapshot for undo |
+
+### Search implementation
+
+The search index is built in memory from repository data. Each part contributes candidates for its name, category, supplier SKU, package, and aliases. Scoring uses `rapidfuzz.fuzz.WRatio` with bonuses for exact matches, substring matches, and full-token coverage. Source weights ensure names and aliases rank higher than category or package matches.
+
+### Auto-assignment implementation
+
+Auto-assignment is a two-step plan-then-apply system:
+
+1. **Plan** — classifies parts into storage classes (`small_short_cell`, `large_cell`, `long_cell`, `binder_card`), gathers available slots, and packs parts using a category-affinity first-fit strategy with a flexible compatibility matrix
+2. **Apply** — writes slot assignments and stores the run for undo
+
+Classification uses regex matching against part names/categories plus quantity thresholds. Users can override the storage class per part. The compatibility matrix allows cross-class placement with penalties, preferring ideal fits but reducing unassigned counts.
+
+### Dependencies
+
+| Dependency | Purpose |
+| --- | --- |
+| Python 3.11+ | Runtime |
+| PySide6 | Desktop GUI |
+| RapidFuzz | Fuzzy text search |
+| pandas | Spreadsheet import |
+| openpyxl | Excel file reading |
+| tabula-py | PDF BOM import (optional, requires Java) |
+| pytest | Testing (dev) |
+| PyInstaller | macOS app bundling (dev) |
+
+### Building the macOS app
+
+```bash
+pip install -e ".[dev]"
+bash scripts/build_macos.sh
+```
+
+Or using Make:
+
+```bash
+make dmg
+```
+
+The build script removes `build/` and `dist/`, runs PyInstaller, applies code signing (ad-hoc for local builds, Developer ID when configured), and optionally creates a DMG if `create-dmg` is installed (`brew install create-dmg`).
+
+### Notarized GitHub releases
+
+To publish releases that open without Gatekeeper warnings, configure these GitHub Actions secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12_BASE64` | Base64-encoded Developer ID Application certificate |
+| `MACOS_CERTIFICATE_PASSWORD` | Password for the .p12 file |
+| `APPLE_SIGNING_IDENTITY` | Full signing identity string |
+| `APPLE_ID` | Apple ID email for notarization |
+| `APPLE_TEAM_ID` | Apple Developer team ID |
+| `APPLE_APP_PASSWORD` | App-specific password for notarization |
+
+### Make targets
+
+| Target | Description |
+| --- | --- |
+| `make install` | Install with BOM-PDF support |
+| `make install-dev` | Install with dev and BOM-PDF extras |
+| `make run` | Launch the app |
+| `make test` | Run the test suite |
+| `make clean` | Remove build and dist directories |
+| `make dmg` | Build the macOS app bundle |
+| `make release VERSION=x.y.z` | Bump version, commit, tag, and push |
+
+### Running tests
+
+```bash
+pytest
+```
+
+The test suite covers search, inventory CRUD, spreadsheet import, storage geometry, auto-assignment planning and undo, classifier rules, BOM operations, and selected UI behavior.
