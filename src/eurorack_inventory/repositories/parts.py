@@ -195,9 +195,10 @@ class PartRepository:
             placeholders = ",".join("?" for _ in ids)
             sql += f" WHERE part_id IN ({placeholders})"
             params = tuple(ids)
-        sql += " ORDER BY category, name"
+        else:
+            sql += " ORDER BY category, name"
         rows = self.db.query_all(sql, params)
-        return [
+        summaries = [
             InventorySummary(
                 part_id=row["part_id"],
                 name=row["name"],
@@ -210,6 +211,10 @@ class PartRepository:
             )
             for row in rows
         ]
+        if part_ids is not None:
+            order = {pid: i for i, pid in enumerate(ids)}
+            summaries.sort(key=lambda s: order.get(s.part_id, len(ids)))
+        return summaries
 
     def get_part_location(self, part_id: int) -> str:
         """Return formatted location string for a part."""

@@ -46,53 +46,39 @@ class SearchService:
         self._candidates = candidates
         logger.info("Search index rebuilt with %s candidates", len(candidates))
 
+    def _score_candidate(self, normalized: str, candidate: SearchCandidate) -> float:
+        base = fuzz.WRatio(normalized, candidate.text)
+        if normalized == candidate.text:
+            base += 100
+        elif candidate.text.startswith(normalized):
+            base += 50
+        elif normalized in candidate.text:
+            base += 25
+        elif all(token in candidate.text for token in normalized.split()):
+            base += 10
+        weight = SOURCE_WEIGHTS.get(candidate.source, 0.7)
+        return base * weight
+
+    def _rank(self, query: str) -> list[tuple[int, float]]:
+        normalized = normalize_text(query)
+        if not normalized:
+            return []
+        scores: dict[int, float] = {}
+        for candidate in self._candidates:
+            weighted = self._score_candidate(normalized, candidate)
+            if weighted < MIN_SCORE:
+                continue
+            current = scores.get(candidate.part_id, 0.0)
+            if weighted > current:
+                scores[candidate.part_id] = weighted
+        return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
     def search(self, query: str, limit: int = 10) -> list[int]:
         normalized = normalize_text(query)
         if not normalized:
             return [summary.part_id for summary in self.part_repo.list_inventory_summaries()[:limit]]
-
-        scores: dict[int, float] = {}
-        for candidate in self._candidates:
-            base = fuzz.WRatio(normalized, candidate.text)
-            if normalized == candidate.text:
-                base += 40
-            elif normalized in candidate.text:
-                base += 20
-            elif all(token in candidate.text for token in normalized.split()):
-                base += 10
-            weight = SOURCE_WEIGHTS.get(candidate.source, 0.7)
-            weighted = base * weight
-            if weighted < MIN_SCORE:
-                continue
-            current = scores.get(candidate.part_id, 0.0)
-            if weighted > current:
-                scores[candidate.part_id] = weighted
-
-        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-        return [part_id for part_id, _score in ranked[:limit]]
+        return [pid for pid, _ in self._rank(query)[:limit]]
 
     def search_scored(self, query: str, limit: int = 10) -> list[tuple[int, float]]:
         """Like search(), but returns (part_id, score) tuples."""
-        normalized = normalize_text(query)
-        if not normalized:
-            return []
-
-        scores: dict[int, float] = {}
-        for candidate in self._candidates:
-            base = fuzz.WRatio(normalized, candidate.text)
-            if normalized == candidate.text:
-                base += 40
-            elif normalized in candidate.text:
-                base += 20
-            elif all(token in candidate.text for token in normalized.split()):
-                base += 10
-            weight = SOURCE_WEIGHTS.get(candidate.source, 0.7)
-            weighted = base * weight
-            if weighted < MIN_SCORE:
-                continue
-            current = scores.get(candidate.part_id, 0.0)
-            if weighted > current:
-                scores[candidate.part_id] = weighted
-
-        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-        return [(part_id, score) for part_id, score in ranked[:limit]]
+        return self._rank(query)[:limit]
