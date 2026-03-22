@@ -977,10 +977,8 @@ class StorageScreen(QWidget):
         length_abbr = "short" if cell_length == CellLength.SHORT.value else "long"
         parts = self._slot_parts.get(slot.id, [])
         if parts:
-            part_text = parts[0].name
-            if len(parts) > 1:
-                part_text += f" +{len(parts) - 1}"
-            return f"{slot.label}\n{part_text}"
+            part_names = "\n".join(p.name for p in parts)
+            return f"{slot.label}\n{part_names}"
         return f"{slot.label}\n{size_abbr} / {length_abbr}"
 
     def _slot_tooltip(self, slot: StorageSlot) -> str:
@@ -1011,9 +1009,7 @@ class StorageScreen(QWidget):
         header = f"{slot.label}  ({used}/{bag_count})"
         if not parts:
             return header
-        names = [p.name for p in parts[:3]]
-        if len(parts) > 3:
-            names.append(f"+{len(parts) - 3} more")
+        names = [p.name for p in parts]
         return header + "\n" + "\n".join(names)
 
     def _binder_card_tooltip(self, slot: StorageSlot) -> str:
