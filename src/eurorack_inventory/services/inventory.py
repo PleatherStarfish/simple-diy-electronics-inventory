@@ -206,27 +206,39 @@ class InventoryService:
     def reassign_part_slot(self, part_id: int, new_slot_id: int) -> Part:
         """Move a part to a different storage slot.
 
-        Any parts already occupying *new_slot_id* are bumped to the
-        Unassigned / Main slot so they don't silently share a cell.
+        For grid cells (capacity 1): existing occupants are bumped to Unassigned.
+        For binder cards (capacity = bag_count): the part is added if there's room,
+        otherwise a ValueError is raised.
         """
-        # Bump existing occupants to Unassigned
+        slot = self.storage_repo.get_slot(new_slot_id)
+        if slot is None:
+            raise ValueError(f"Unknown slot_id={new_slot_id}")
+
         occupants = self.part_repo.list_parts_by_slot_ids([new_slot_id]).get(new_slot_id, [])
-        if occupants:
-            unassigned_slot_id = self._get_unassigned_slot_id()
-            for occ in occupants:
-                if occ.id == part_id:
-                    continue
-                self.part_repo.update_part(occ.id, slot_id=unassigned_slot_id)
-                self.audit_repo.add_event(
-                    event_type="part.bumped",
-                    entity_type="part",
-                    entity_id=occ.id,
-                    message=f"Bumped part {occ.name} to Unassigned (displaced by move)",
-                    payload={"from_slot_id": new_slot_id, "to_slot_id": unassigned_slot_id},
+        other_occupants = [o for o in occupants if o.id != part_id]
+
+        if slot.slot_type == SlotType.CARD.value:
+            # Binder card: check bag capacity — don't bump, just reject if full
+            bag_count = slot.metadata.get("bag_count", 4)
+            if len(other_occupants) >= bag_count:
+                raise ValueError(
+                    f"Card is full ({len(other_occupants)}/{bag_count} bags used)"
                 )
+        else:
+            # Grid cell or other slot: bump existing occupants to Unassigned
+            if other_occupants:
+                unassigned_slot_id = self._get_unassigned_slot_id()
+                for occ in other_occupants:
+                    self.part_repo.update_part(occ.id, slot_id=unassigned_slot_id)
+                    self.audit_repo.add_event(
+                        event_type="part.bumped",
+                        entity_type="part",
+                        entity_id=occ.id,
+                        message=f"Bumped part {occ.name} to Unassigned (displaced by move)",
+                        payload={"from_slot_id": new_slot_id, "to_slot_id": unassigned_slot_id},
+                    )
 
         updated = self.part_repo.update_part(part_id, slot_id=new_slot_id)
-        slot = self.storage_repo.get_slot(new_slot_id)
         container = self.storage_repo.get_container(slot.container_id) if slot else None
         loc = f"{container.name} / {slot.label}" if container and slot else f"slot #{new_slot_id}"
         self.audit_repo.add_event(

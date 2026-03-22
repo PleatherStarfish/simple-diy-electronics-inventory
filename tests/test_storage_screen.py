@@ -270,7 +270,7 @@ def test_delete_container_via_screen(qapp, ui_context) -> None:
     screen.close()
 
 
-def test_binder_renders_cards_with_bag_count(qapp, ui_context) -> None:
+def test_binder_renders_cards_as_visual_grid(qapp, ui_context) -> None:
     container = ui_context.storage_service.configure_binder(
         name="Binder UI", num_cards=3, bags_per_card=6,
     )
@@ -278,14 +278,18 @@ def test_binder_renders_cards_with_bag_count(qapp, ui_context) -> None:
     screen = StorageScreen(ui_context)
     screen.load_container(container.id)
 
-    assert screen.grid_table.rowCount() == 3
-    assert screen.grid_table.columnCount() == 4
-    assert screen.grid_table.item(0, 0).text() == "Card 1"
-    assert screen.grid_table.item(0, 1).text() == "6 bags"
-    assert screen.grid_table.item(0, 2).text() == "6 free"  # all available
-    assert screen.grid_table.item(0, 3).text() == ""  # no parts assigned yet
-    assert screen.grid_table.item(2, 0).text() == "Card 3"
+    # 3 cards in a 2-column grid = 2 rows
+    assert screen.grid_table.rowCount() == 2
+    assert screen.grid_table.columnCount() == 2
+    # Card 1 at (0,0), Card 2 at (0,1), Card 3 at (1,0)
+    assert "Card 1" in screen.grid_table.item(0, 0).text()
+    assert "(0/6)" in screen.grid_table.item(0, 0).text()
+    assert "Card 2" in screen.grid_table.item(0, 1).text()
+    assert "Card 3" in screen.grid_table.item(1, 0).text()
     assert screen.binder_cards_spin.value() == 3
+    # Headers hidden for clean binder look
+    assert not screen.grid_table.horizontalHeader().isVisible()
+    assert not screen.grid_table.verticalHeader().isVisible()
     # Check visibility policy (not isVisible, which requires a visible parent)
     assert not screen.binder_resize_widget.isHidden()
     assert screen.resize_widget.isHidden()
@@ -300,13 +304,15 @@ def test_binder_resize_via_screen(qapp, ui_context) -> None:
 
     screen = StorageScreen(ui_context)
     screen.load_container(container.id)
-    assert screen.grid_table.rowCount() == 2
+    # 2 cards = 1 row x 2 cols
+    assert screen.grid_table.rowCount() == 1
 
     # Simulate resize to 4 cards
     screen.binder_cards_spin.setValue(4)
     screen._resize_binder()
 
-    assert screen.grid_table.rowCount() == 4
+    # 4 cards = 2 rows x 2 cols
+    assert screen.grid_table.rowCount() == 2
     slots = ui_context.storage_repo.list_slots_for_container(container.id)
     assert len(slots) == 4
 
@@ -325,10 +331,10 @@ def test_binder_card_bag_count_update_via_service(qapp, ui_context) -> None:
     card1 = ui_context.storage_repo.get_slot_by_label(container.id, "Card 1")
     ui_context.storage_service.update_card_bag_count(slot_id=card1.id, bag_count=10)
 
-    # Reload and verify display
+    # Reload and verify display — Card 1 at (0,0), Card 2 at (0,1)
     screen.load_container(container.id)
-    assert screen.grid_table.item(0, 1).text() == "10 bags"
-    assert screen.grid_table.item(1, 1).text() == "4 bags"  # card 2 unchanged
+    assert "(0/10)" in screen.grid_table.item(0, 0).text()
+    assert "(0/4)" in screen.grid_table.item(0, 1).text()
 
     screen.close()
 

@@ -53,6 +53,10 @@ _CELL_COLORS_FILLED = {
     (CellSize.LARGE.value, CellLength.LONG.value): QColor(240, 180, 100),       # orange
 }
 _DEFAULT_CELL_COLOR = QColor(240, 240, 240)
+# Binder card colors by fill state
+_BINDER_CARD_EMPTY_COLOR = QColor(230, 230, 230)       # light gray
+_BINDER_CARD_PARTIAL_COLOR = QColor(178, 215, 225)     # soft teal — in use, has room
+_BINDER_CARD_FULL_COLOR = QColor(240, 195, 120)        # warm amber — full
 _GRID_CELL_MIN_HEIGHT = 52
 _GRID_CELL_PADDING = 6
 _GRID_CELL_CORNER_RADIUS = 7
@@ -71,6 +75,17 @@ class StorageGridDelegate(QStyledItemDelegate):
     """Paint grid cells directly so spans and selection stay slot-based."""
 
     def sizeHint(self, option, index):
+        from PySide6.QtCore import QSize
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        if "\n" in text:
+            # Multi-line content (e.g. binder cards): measure actual text height
+            fm = option.fontMetrics
+            padding = _GRID_CELL_PADDING * 2 + 4  # top/bottom padding + card margin
+            text_width = option.rect.width() - padding if option.rect.width() > 0 else 200
+            br = fm.boundingRect(0, 0, text_width, 0,
+                                 Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                                 text)
+            return QSize(option.rect.width(), max(br.height() + padding, _GRID_CELL_MIN_HEIGHT))
         hint = super().sizeHint(option, index)
         hint.setHeight(max(hint.height(), _GRID_CELL_MIN_HEIGHT))
         return hint
@@ -357,6 +372,7 @@ class StorageScreen(QWidget):
         self._slot_label_map: dict[str, StorageSlot] = {}
         self._slot_parts: dict[int, list[Part]] = {}
         self._selected_slot_labels: set[str] = set()
+        self._slot_grid_pos: dict[str, tuple[int, int]] = {}
         self._grid_refresh_pending = False
 
         # --- Left panel: container list ---
@@ -693,18 +709,17 @@ class StorageScreen(QWidget):
                 self.slot_table.setItem(row_idx, 1, QTableWidgetItem(part.category or ""))
                 self.slot_table.setItem(row_idx, 2, QTableWidgetItem(str(part.qty)))
         elif is_binder:
-            self.slot_table.setColumnCount(5)
-            self.slot_table.setHorizontalHeaderLabels(["Card", "Bags", "Used", "Available", "Parts"])
+            self.slot_table.setColumnCount(4)
+            self.slot_table.setHorizontalHeaderLabels(["Card", "Capacity", "Available", "Parts"])
             self.slot_table.setRowCount(len(slots))
             for row_idx, slot in enumerate(slots):
                 bag_count = slot.metadata.get("bag_count", 4)
                 used = len(self._slot_parts.get(slot.id, []))
                 available = max(0, bag_count - used)
                 self.slot_table.setItem(row_idx, 0, QTableWidgetItem(slot.label))
-                self.slot_table.setItem(row_idx, 1, QTableWidgetItem(str(bag_count)))
-                self.slot_table.setItem(row_idx, 2, QTableWidgetItem(str(used)))
-                self.slot_table.setItem(row_idx, 3, QTableWidgetItem(str(available)))
-                self.slot_table.setItem(row_idx, 4, QTableWidgetItem(
+                self.slot_table.setItem(row_idx, 1, QTableWidgetItem(f"{used}/{bag_count}"))
+                self.slot_table.setItem(row_idx, 2, QTableWidgetItem(str(available)))
+                self.slot_table.setItem(row_idx, 3, QTableWidgetItem(
                     self._parts_summary(slot.id)
                 ))
         elif is_grid:
@@ -756,6 +771,7 @@ class StorageScreen(QWidget):
             card_count = sum(1 for s in slots if s.slot_type == SlotType.CARD.value)
             self.binder_cards_spin.setValue(card_count)
             self._render_binder(slots)
+            self._schedule_grid_layout_refresh()
         else:
             self._render_non_grid(slots)
 
@@ -772,10 +788,16 @@ class StorageScreen(QWidget):
         self.grid_table.setVerticalHeaderLabels(
             [self._row_label(i) for i in range(rows)]
         )
+        self.grid_table.horizontalHeader().setVisible(True)
+        self.grid_table.verticalHeader().setVisible(True)
+        self.grid_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         # Build slot map and collect layout info
         self._slot_map.clear()
         self._slot_label_map.clear()
+        self._slot_grid_pos.clear()
         occupied: set[tuple[int, int]] = set()
         pending_spans: list[tuple[int, int, int, int]] = []
 
@@ -791,6 +813,7 @@ class StorageScreen(QWidget):
                     self._slot_map[(r, c)] = slot
                     occupied.add((r, c))
             self._slot_label_map[slot.label] = slot
+            self._slot_grid_pos[slot.label] = (slot.y1, slot.x1)
 
             is_occupied = bool(self._slot_parts.get(slot.id))
             item = QTableWidgetItem(self._slot_display_text(slot))
@@ -824,6 +847,7 @@ class StorageScreen(QWidget):
         self._slot_map.clear()
         self._slot_label_map.clear()
         self._selected_slot_labels.clear()
+        self._slot_grid_pos.clear()
         self.grid_table.clearSpans()
         self.grid_table.setRowCount(0)
         self.grid_table.setColumnCount(0)
@@ -831,34 +855,56 @@ class StorageScreen(QWidget):
         card_slots = [s for s in slots if s.slot_type == SlotType.CARD.value]
         card_slots.sort(key=lambda s: s.ordinal or 0)
 
-        self.grid_table.setRowCount(max(1, len(card_slots)))
-        self.grid_table.setColumnCount(4)
-        self.grid_table.setHorizontalHeaderLabels(["Card", "Bags", "Available", "Parts"])
-        self.grid_table.setVerticalHeaderLabels([""] * max(1, len(card_slots)))
-        if card_slots:
-            for row, slot in enumerate(card_slots):
-                self._slot_label_map[slot.label] = slot
-                label_item = QTableWidgetItem(slot.label)
-                label_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                label_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
-                self.grid_table.setItem(row, 0, label_item)
-                bag_count = slot.metadata.get("bag_count", 4)
-                used = len(self._slot_parts.get(slot.id, []))
-                available = max(0, bag_count - used)
-                bag_item = QTableWidgetItem(f"{bag_count} bags")
-                bag_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                bag_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
-                self.grid_table.setItem(row, 1, bag_item)
-                avail_item = QTableWidgetItem(f"{available} free")
-                avail_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                avail_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
-                self.grid_table.setItem(row, 2, avail_item)
-                parts_item = QTableWidgetItem(self._parts_summary(slot.id))
-                parts_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                parts_item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
-                self.grid_table.setItem(row, 3, parts_item)
-        else:
+        if not card_slots:
+            self.grid_table.setRowCount(1)
+            self.grid_table.setColumnCount(1)
+            self.grid_table.setHorizontalHeaderLabels([""])
+            self.grid_table.setVerticalHeaderLabels([""])
             self.grid_table.setItem(0, 0, QTableWidgetItem("No cards yet"))
+            return
+
+        num_cols = 2
+        num_rows = (len(card_slots) + num_cols - 1) // num_cols
+
+        self.grid_table.setRowCount(num_rows)
+        self.grid_table.setColumnCount(num_cols)
+        self.grid_table.setHorizontalHeaderLabels([""] * num_cols)
+        self.grid_table.setVerticalHeaderLabels([""] * num_rows)
+        self.grid_table.horizontalHeader().setVisible(False)
+        self.grid_table.verticalHeader().setVisible(False)
+
+        for idx, slot in enumerate(card_slots):
+            row = idx // num_cols
+            col = idx % num_cols
+            self._slot_map[(row, col)] = slot
+            self._slot_label_map[slot.label] = slot
+            self._slot_grid_pos[slot.label] = (row, col)
+
+            is_occupied = bool(self._slot_parts.get(slot.id))
+            item = QTableWidgetItem(self._binder_card_display_text(slot))
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            item.setBackground(self._binder_card_color(slot))
+            item.setData(_GRID_CELL_SELECTION_ROLE, slot.label in self._selected_slot_labels)
+            item.setData(_GRID_CELL_SLOT_LABEL_ROLE, slot.label)
+            item.setData(_GRID_CELL_OCCUPIED_ROLE, is_occupied)
+            item.setData(_GRID_CELL_DROP_TARGET_ROLE, False)
+            item.setToolTip(self._binder_card_tooltip(slot))
+            self.grid_table.setItem(row, col, item)
+
+        # Fill trailing empty cells if odd number of cards
+        if len(card_slots) % num_cols != 0:
+            last_row = num_rows - 1
+            for c in range(len(card_slots) % num_cols, num_cols):
+                item = QTableWidgetItem("")
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                item.setBackground(_DEFAULT_CELL_COLOR)
+                self.grid_table.setItem(last_row, c, item)
+
+        # Let rows grow to fit multi-line card content
+        self.grid_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.grid_table.viewport().update()
 
     def _render_unassigned(self, slots) -> None:
         """Render the Unassigned container as a per-part list in the visual area."""
@@ -868,6 +914,8 @@ class StorageScreen(QWidget):
         self.grid_table.clearSpans()
         self.grid_table.setRowCount(0)
         self.grid_table.setColumnCount(0)
+        self.grid_table.horizontalHeader().setVisible(True)
+        self.grid_table.verticalHeader().setVisible(True)
 
         # Gather all unassigned parts
         all_unassigned: list[Part] = []
@@ -907,6 +955,8 @@ class StorageScreen(QWidget):
         self.grid_table.clearSpans()
         self.grid_table.setRowCount(0)
         self.grid_table.setColumnCount(0)
+        self.grid_table.horizontalHeader().setVisible(True)
+        self.grid_table.verticalHeader().setVisible(True)
         self.grid_table.setRowCount(max(1, len(slots)))
         self.grid_table.setColumnCount(1)
         self.grid_table.setHorizontalHeaderLabels(["Slots"])
@@ -954,6 +1004,39 @@ class StorageScreen(QWidget):
         names = [f"{p.name} ({p.qty})" for p in parts]
         return ", ".join(names)
 
+    def _binder_card_display_text(self, slot: StorageSlot) -> str:
+        bag_count = slot.metadata.get("bag_count", 4)
+        parts = self._slot_parts.get(slot.id, [])
+        used = len(parts)
+        header = f"{slot.label}  ({used}/{bag_count})"
+        if not parts:
+            return header
+        names = [p.name for p in parts[:3]]
+        if len(parts) > 3:
+            names.append(f"+{len(parts) - 3} more")
+        return header + "\n" + "\n".join(names)
+
+    def _binder_card_tooltip(self, slot: StorageSlot) -> str:
+        bag_count = slot.metadata.get("bag_count", 4)
+        parts = self._slot_parts.get(slot.id, [])
+        used = len(parts)
+        available = max(0, bag_count - used)
+        lines = [f"{slot.label}  |  {used}/{bag_count} used  |  {available} available"]
+        for p in parts:
+            lines.append(f"  {p.name} (qty {p.qty})")
+        if not parts:
+            lines.append("  (empty)")
+        return "\n".join(lines)
+
+    def _binder_card_color(self, slot: StorageSlot) -> QColor:
+        bag_count = slot.metadata.get("bag_count", 4)
+        used = len(self._slot_parts.get(slot.id, []))
+        if used == 0:
+            return _BINDER_CARD_EMPTY_COLOR
+        if used >= bag_count:
+            return _BINDER_CARD_FULL_COLOR
+        return _BINDER_CARD_PARTIAL_COLOR
+
     def _cell_color(self, slot: StorageSlot) -> QColor:
         is_filled = bool(self._slot_parts.get(slot.id))
         is_merged = (slot.x1 != slot.x2) or (slot.y1 != slot.y2)
@@ -984,7 +1067,11 @@ class StorageScreen(QWidget):
         else:
             self._selected_slot_labels.discard(slot.label)
 
-        item = self.grid_table.item(slot.y1, slot.x1)
+        pos = self._slot_grid_pos.get(slot.label)
+        if pos is None:
+            return
+        row, col = pos
+        item = self.grid_table.item(row, col)
         if item is not None:
             item.setData(_GRID_CELL_SELECTION_ROLE, selected)
             self.grid_table.viewport().update(self.grid_table.visualItemRect(item))
@@ -1011,9 +1098,10 @@ class StorageScreen(QWidget):
         # Highlight the slot
         self._clear_selection()
         self._set_slot_selected(slot, True)
-        # Scroll to the slot if it's a grid cell
-        if slot.y1 is not None and slot.x1 is not None:
-            item = self.grid_table.item(slot.y1, slot.x1)
+        # Scroll to the slot
+        pos = self._slot_grid_pos.get(slot.label)
+        if pos is not None:
+            item = self.grid_table.item(pos[0], pos[1])
             if item is not None:
                 self.grid_table.scrollToItem(item)
         # Remove highlight after 2 seconds
