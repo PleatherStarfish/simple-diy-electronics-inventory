@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         # Wire cross-screen signals
         self.inventory_screen.find_in_storage_requested.connect(self._on_find_in_storage)
         self.inventory_screen.merge_requested.connect(self._on_merge_drop)
+        self.inventory_screen.inventory_changed.connect(self.storage_screen._refresh_utilization)
 
         self._build_log_dock()
         self._build_audit_dock()

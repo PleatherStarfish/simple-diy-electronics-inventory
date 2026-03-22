@@ -553,6 +553,16 @@ class StorageScreen(QWidget):
             cid: (occupied_per_container.get(cid, 0), total)
             for cid, total in total_per_container.items()
         }
+        # For binder containers, show bag-level utilization instead of card-level
+        containers = self.context.storage_service.list_containers()
+        parts_per_slot = self.context.part_repo.count_parts_per_slot()
+        for container in containers:
+            if container.container_type != ContainerType.BINDER.value:
+                continue
+            slots = self.context.storage_repo.list_slots_for_container(container.id)
+            total_bags = sum(s.metadata.get("bag_count", 4) for s in slots)
+            occupied_bags = sum(parts_per_slot.get(s.id, 0) for s in slots)
+            util[container.id] = (occupied_bags, total_bags)
         # For Unassigned container, show part count instead of slot occupancy
         unassigned_container = self.context.storage_repo.get_container_by_name("Unassigned")
         if unassigned_container is not None:
