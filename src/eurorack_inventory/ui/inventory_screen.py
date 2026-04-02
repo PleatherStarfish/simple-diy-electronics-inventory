@@ -354,6 +354,7 @@ class InventoryScreen(QWidget):
     def _part_dialog_options(self) -> dict:
         return {
             "slots": self._get_slot_choices(),
+            "occupied_slot_ids": self.context.part_repo.list_occupied_slot_ids(),
             "categories": self.context.part_repo.list_distinct_categories(),
             "packages": self.context.part_repo.list_distinct_packages(),
         }

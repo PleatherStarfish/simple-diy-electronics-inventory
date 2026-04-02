@@ -192,7 +192,8 @@ class BomsScreen(QWidget):
 
     def refresh(self) -> None:
         sources = self.context.bom_service.list_bom_sources()
-        self.source_model.update_rows(sources)
+        counts = self.context.bom_repo.get_confirmation_counts()
+        self.source_model.update_rows(sources, counts)
         if not sources:
             self.current_source_id = None
             self._clear_loaded_source()

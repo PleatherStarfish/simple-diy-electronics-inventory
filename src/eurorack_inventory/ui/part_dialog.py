@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -34,6 +35,7 @@ class PartDialog(QDialog):
         *,
         part: Part | None = None,
         slots: list[tuple[int, str]] | None = None,
+        occupied_slot_ids: set[int] | None = None,
         categories: list[str] | None = None,
         packages: list[str] | None = None,
     ) -> None:
@@ -59,10 +61,15 @@ class PartDialog(QDialog):
         self.notes_edit = QTextEdit()
         self.notes_edit.setMaximumHeight(80)
 
-        # Populate location combo
+        # Populate location combo, coloring occupied slots
+        occupied = occupied_slot_ids or set()
         self.location_combo.addItem("(none)", None)
+        model = self.location_combo.model()
         for slot_id, label in (slots or []):
             self.location_combo.addItem(label, slot_id)
+            if slot_id in occupied:
+                item = model.item(self.location_combo.count() - 1)
+                item.setForeground(QBrush(QColor(180, 130, 0)))
 
         # Pre-fill for edit mode
         if part is not None:

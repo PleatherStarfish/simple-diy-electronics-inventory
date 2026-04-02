@@ -12,10 +12,16 @@ class BomSourceListModel(QAbstractListModel):
     def __init__(self, rows: list[BomSource] | None = None) -> None:
         super().__init__()
         self.rows: list[BomSource] = rows or []
+        self._counts: dict[int, tuple[int, int]] = {}  # source_id -> (confirmed, total)
 
-    def update_rows(self, rows: list[BomSource]) -> None:
+    def update_rows(
+        self,
+        rows: list[BomSource],
+        counts: dict[int, tuple[int, int]] | None = None,
+    ) -> None:
         self.beginResetModel()
         self.rows = rows
+        self._counts = counts or {}
         self.endResetModel()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -25,13 +31,25 @@ class BomSourceListModel(QAbstractListModel):
         if not index.isValid():
             return None
         source = self.rows[index.row()]
+        confirmed, total = self._counts.get(source.id, (0, 0))
         if role == Qt.DisplayRole:
             label = source.module_name
             if source.promoted_project_id is not None:
                 label += " [promoted]"
+            if total > 0:
+                label += f"  ({confirmed}/{total})"
             return label
+        if role == Qt.ForegroundRole:
+            if total > 0 and confirmed == total:
+                return QBrush(QColor(30, 130, 50))  # green — fully confirmed
+            if confirmed > 0:
+                return QBrush(QColor(180, 130, 0))  # amber — partially confirmed
+            return None
         if role == Qt.ToolTipRole:
-            return f"{source.filename} ({source.source_kind})"
+            tip = f"{source.filename} ({source.source_kind})"
+            if total > 0:
+                tip += f"\n{confirmed} of {total} components confirmed"
+            return tip
         return None
 
     def source_at(self, row: int) -> BomSource | None:

@@ -92,6 +92,19 @@ class BomRepository:
         rows = self.db.query_all("SELECT * FROM bom_sources ORDER BY manufacturer, module_name")
         return [_row_to_bom_source(row) for row in rows]
 
+    def get_confirmation_counts(self) -> dict[int, tuple[int, int]]:
+        """Return {source_id: (confirmed_count, total_count)} for all sources."""
+        rows = self.db.query_all(
+            """
+            SELECT bom_source_id,
+                   SUM(is_verified) AS confirmed,
+                   COUNT(*) AS total
+            FROM normalized_bom_items
+            GROUP BY bom_source_id
+            """
+        )
+        return {row["bom_source_id"]: (int(row["confirmed"]), int(row["total"])) for row in rows}
+
     def find_by_hash_and_module(self, file_hash: str, module_name: str) -> BomSource | None:
         row = self.db.query_one(
             "SELECT * FROM bom_sources WHERE file_hash = ? AND module_name = ?",
