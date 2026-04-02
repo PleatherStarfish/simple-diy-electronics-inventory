@@ -66,10 +66,12 @@ class PartDialog(QDialog):
         self.location_combo.addItem("(none)", None)
         model = self.location_combo.model()
         for slot_id, label in (slots or []):
-            self.location_combo.addItem(label, slot_id)
             if slot_id in occupied:
+                self.location_combo.addItem(f"{label}  \u25cf", slot_id)
                 item = model.item(self.location_combo.count() - 1)
                 item.setForeground(QBrush(QColor(180, 130, 0)))
+            else:
+                self.location_combo.addItem(f"{label}  \u25cb", slot_id)
 
         # Pre-fill for edit mode
         if part is not None:
