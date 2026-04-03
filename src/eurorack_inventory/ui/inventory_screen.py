@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -93,15 +93,22 @@ class _LocationDelegate(_SearchableComboDelegate):
         self._context = context
 
     def _populate(self, combo, index):
+        occupied = self._context.part_repo.list_occupied_slot_ids()
         combo.addItem("(none)", None)
+        model = combo.model()
         for container in self._context.storage_service.list_containers():
             for slot in self._context.storage_service.list_slots(container.id):
                 label = f"{container.name} / {slot.label}"
-                combo.addItem(label, slot.id)
+                if slot.id in occupied:
+                    combo.addItem(f"{label}  \u25cf", slot.id)
+                    item = model.item(combo.count() - 1)
+                    item.setForeground(QBrush(QColor(180, 130, 0)))
+                else:
+                    combo.addItem(f"{label}  \u25cb", slot.id)
 
     def setEditorData(self, editor, index):
         current = index.data(Qt.DisplayRole) or ""
-        idx = editor.findText(current, Qt.MatchFlag.MatchExactly)
+        idx = editor.findText(current, Qt.MatchFlag.MatchStartsWith)
         if idx >= 0:
             editor.setCurrentIndex(idx)
         else:
