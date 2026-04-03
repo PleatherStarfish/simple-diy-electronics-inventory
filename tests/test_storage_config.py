@@ -145,14 +145,38 @@ def test_merge_non_rectangle_fails(services) -> None:
         )
 
 
-def test_merge_blocked_by_stock(services) -> None:
+def test_merge_allowed_with_one_occupied_slot(services) -> None:
+    """Merging is allowed when exactly one of the selected cells has parts."""
     storage_svc, inventory_svc, storage_repo, _ = services
+    part_repo = storage_svc.part_repo
     container = storage_svc.configure_grid_box(name="Box S", rows=2, cols=2)
 
     a0 = storage_repo.get_slot_by_label(container.id, "A0")
     inventory_svc.upsert_part(name="10k resistor", category="Resistors", qty=5, slot_id=a0.id)
 
-    with pytest.raises(ValueError, match="parts assigned"):
+    merged = storage_svc.merge_cells(
+        container_id=container.id,
+        labels=["A0", "A1"],
+    )
+
+    # Part should now be assigned to the merged slot
+    parts = part_repo.list_parts_by_slot_ids([merged.id])
+    assert merged.id in parts
+    assert len(parts[merged.id]) == 1
+    assert parts[merged.id][0].name == "10k resistor"
+
+
+def test_merge_blocked_when_multiple_slots_occupied(services) -> None:
+    """Merging is blocked when more than one selected cell has parts."""
+    storage_svc, inventory_svc, storage_repo, _ = services
+    container = storage_svc.configure_grid_box(name="Box S2", rows=2, cols=2)
+
+    a0 = storage_repo.get_slot_by_label(container.id, "A0")
+    a1 = storage_repo.get_slot_by_label(container.id, "A1")
+    inventory_svc.upsert_part(name="10k resistor", category="Resistors", qty=5, slot_id=a0.id)
+    inventory_svc.upsert_part(name="100nF cap", category="Capacitors", qty=3, slot_id=a1.id)
+
+    with pytest.raises(ValueError, match="more than one has parts assigned"):
         storage_svc.merge_cells(
             container_id=container.id,
             labels=["A0", "A1"],

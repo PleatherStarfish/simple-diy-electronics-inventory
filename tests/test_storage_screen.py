@@ -93,6 +93,44 @@ def test_grid_selection_supports_multi_select_and_merge(qapp, ui_context) -> Non
     screen.close()
 
 
+def test_grid_merge_allows_one_occupied_slot_and_preserves_assignment(qapp, ui_context) -> None:
+    container = ui_context.storage_service.configure_grid_box(name="Occupied Merge Grid", rows=2, cols=2)
+    a0 = ui_context.storage_repo.get_slot_by_label(container.id, "A0")
+    assert a0 is not None
+    ui_context.inventory_service.upsert_part(
+        name="10k resistor",
+        category="Resistors",
+        qty=5,
+        slot_id=a0.id,
+    )
+
+    screen = StorageScreen(ui_context)
+    screen.resize(900, 600)
+    screen.show()
+    qapp.processEvents()
+    screen.load_container(container.id)
+    qapp.processEvents()
+
+    assert screen._toggle_selection_at_grid_pos(_cell_center(screen, 0, 0))
+    assert screen._toggle_selection_at_grid_pos(_cell_center(screen, 0, 1))
+
+    screen._merge_selected()
+
+    merged = ui_context.storage_repo.get_slot_by_label(container.id, "A0-A1")
+    assert merged is not None
+    assert screen.grid_table.columnSpan(0, 0) == 2
+    assert screen._get_selected_slots() == []
+
+    parts = ui_context.part_repo.list_parts_by_slot_ids([merged.id])
+    assert [part.name for part in parts[merged.id]] == ["10k resistor"]
+
+    item = screen.grid_table.item(0, 0)
+    assert item is not None
+    assert "10k resistor" in item.text()
+
+    screen.close()
+
+
 def test_new_grid_box_all_cells_clickable_immediately(qapp, ui_context) -> None:
     """Regression: newly created grid boxes must have every cell clickable without resize."""
     container = ui_context.storage_service.configure_grid_box(name="Fresh Grid", rows=6, cols=6)

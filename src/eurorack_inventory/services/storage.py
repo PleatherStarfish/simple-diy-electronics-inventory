@@ -4,7 +4,7 @@ import logging
 from dataclasses import asdict
 
 from eurorack_inventory.domain.enums import CellLength, CellSize, ContainerType, SlotType, StorageClass
-from eurorack_inventory.domain.models import StorageContainer, StorageSlot
+from eurorack_inventory.domain.models import StorageContainer, StorageSlot, utc_now_iso as _utc_now_iso
 from eurorack_inventory.domain.storage import (
     GridRegion,
     grid_region_to_label,
@@ -390,10 +390,14 @@ class StorageService:
                 raise ValueError(f"Slot {label!r} not found in container")
             slots.append(slot)
 
-        # Check none have stock assigned
+        # Allow merge only if at most one slot has parts assigned.
         slot_ids = [s.id for s in slots]
-        if self._slots_have_stock(slot_ids):
-            raise ValueError("Cannot merge cells that have parts assigned to them")
+        occupied_ids = [
+            sid for sid in slot_ids
+            if self._slots_have_stock([sid])
+        ]
+        if len(occupied_ids) > 1:
+            raise ValueError("Cannot merge cells when more than one has parts assigned")
 
         # Compute bounding rectangle from all slot coordinates
         all_rows = []
@@ -426,6 +430,22 @@ class StorageService:
         if actual_cells != expected_cells:
             raise ValueError("Selected cells do not form a contiguous rectangle")
 
+        # Temporarily unassign parts from the occupied slot (if any) so the
+        # FK constraint (ON DELETE RESTRICT) allows us to delete the old slots.
+        # We'll reassign them to the new merged slot after creation.
+        reassign_part_ids: list[int] = []
+        if occupied_ids:
+            rows = self.storage_repo.db.query_all(
+                "SELECT id FROM parts WHERE slot_id = ?",
+                (occupied_ids[0],),
+            )
+            reassign_part_ids = [r["id"] for r in rows]
+            now = _utc_now_iso()
+            self.storage_repo.db.executemany(
+                "UPDATE parts SET slot_id = NULL, updated_at = ? WHERE id = ?",
+                [(now, pid) for pid in reassign_part_ids],
+            )
+
         # Delete individual slots
         for s in slots:
             self.storage_repo.delete_slot(s.id)
@@ -448,6 +468,15 @@ class StorageService:
                 },
             )
         )
+
+        # Reassign parts from the previously occupied slot to the new merged slot
+        if reassign_part_ids:
+            now = _utc_now_iso()
+            self.storage_repo.db.executemany(
+                "UPDATE parts SET slot_id = ?, updated_at = ? WHERE id = ?",
+                [(merged_slot.id, now, pid) for pid in reassign_part_ids],
+            )
+
         self.audit_repo.add_event(
             event_type="slot.merged",
             entity_type="slot",
