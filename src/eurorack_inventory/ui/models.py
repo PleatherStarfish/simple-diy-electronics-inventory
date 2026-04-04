@@ -10,7 +10,7 @@ from eurorack_inventory.repositories.audit import AuditRepository
 
 class InventoryTableModel(QAbstractTableModel):
     HEADERS = ["Component", "Category", "Qty", "Package", "Locations", "SKU"]
-    _EDITABLE_COLUMNS = {0, 1, 2, 3, 4, 5}  # All columns editable
+    _EDITABLE_COLUMNS = {0, 1, 2, 3, 5}
 
     # Emitted when a cell is edited: (part_id, column, new_value)
     cell_edited = Signal(int, int, object)

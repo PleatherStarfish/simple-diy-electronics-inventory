@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -25,6 +26,7 @@ from eurorack_inventory.app import AppContext
 from eurorack_inventory.services.common import normalize_text
 from eurorack_inventory.ui.models import InventoryTableModel
 from eurorack_inventory.ui.part_dialog import PartDialog
+from eurorack_inventory.ui.part_locations_dialog import PartLocationsDialog
 
 
 class _SearchableComboDelegate(QStyledItemDelegate):
@@ -85,34 +87,6 @@ class _PackageDelegate(_SearchableComboDelegate):
 
     def setModelData(self, editor, model, index):
         model.setData(index, editor.currentText().strip(), Qt.EditRole)
-
-
-class _LocationDelegate(_SearchableComboDelegate):
-    def __init__(self, context, parent=None):
-        super().__init__(parent)
-        self._context = context
-
-    def _populate(self, combo, index):
-        occupied = self._context.part_repo.list_occupied_slot_ids()
-        combo.addItem("(none)", None)
-        model = combo.model()
-        for container in self._context.storage_service.list_containers():
-            for slot in self._context.storage_service.list_slots(container.id):
-                label = f"{container.name} / {slot.label}"
-                if slot.id in occupied:
-                    combo.addItem(f"{label}  \u25cf", slot.id)
-                    item = model.item(combo.count() - 1)
-                    item.setForeground(QBrush(QColor(180, 130, 0)))
-                else:
-                    combo.addItem(f"{label}  \u25cb", slot.id)
-
-    def setEditorData(self, editor, index):
-        current = index.data(Qt.DisplayRole) or ""
-        idx = editor.findText(current, Qt.MatchFlag.MatchStartsWith)
-        if idx >= 0:
-            editor.setCurrentIndex(idx)
-        else:
-            editor.setCurrentIndex(0)
 
 
 class _MergeDropTableView(QTableView):
@@ -185,11 +159,11 @@ class InventoryScreen(QWidget):
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
         self.inventory_table.verticalHeader().setVisible(False)
         self.inventory_table.clicked.connect(self._on_inventory_clicked)
+        self.inventory_table.doubleClicked.connect(self._on_inventory_double_clicked)
         self.inventory_table.merge_requested.connect(self._on_merge_drop)
         self.inventory_model.cell_edited.connect(self._on_cell_edited)
         self.inventory_table.setItemDelegateForColumn(1, _CategoryDelegate(context, self.inventory_table))
         self.inventory_table.setItemDelegateForColumn(3, _PackageDelegate(context, self.inventory_table))
-        self.inventory_table.setItemDelegateForColumn(4, _LocationDelegate(context, self.inventory_table))
 
         self.name_value = QLabel("Select a part")
         self.category_value = QLabel("")
@@ -197,6 +171,7 @@ class InventoryScreen(QWidget):
         self.total_qty_value = QLabel("")
         self.sku_value = QLabel("")
         self.location_value = QLabel("")
+        self.location_value.setWordWrap(True)
         self.notes_text = QTextEdit()
         self.notes_text.setToolTip("Edit this field and click Save Notes to persist changes")
 
@@ -248,7 +223,7 @@ class InventoryScreen(QWidget):
         location_row = QHBoxLayout()
         location_row.addWidget(self.location_value)
         location_row.addWidget(self.find_storage_btn)
-        detail_form.addRow("Location", location_row)
+        detail_form.addRow("Locations", location_row)
 
         detail_group = QGroupBox("Part Details")
         detail_group.setLayout(detail_form)
@@ -329,6 +304,13 @@ class InventoryScreen(QWidget):
         if part_id is not None:
             self._load_detail(part_id)
 
+    def _on_inventory_double_clicked(self, index) -> None:
+        part_id = self.inventory_model.part_id_at(index.row())
+        if part_id is None:
+            return
+        if index.column() == 4:
+            self._open_locations_editor(part_id, index)
+
     def _load_detail(self, part_id: int) -> None:
         detail = self.context.inventory_service.get_part_detail(part_id)
         self.current_part_id = part_id
@@ -337,7 +319,7 @@ class InventoryScreen(QWidget):
         self.package_value.setText(detail.part.default_package or "")
         self.total_qty_value.setText(str(detail.part.qty))
         self.sku_value.setText(detail.part.supplier_sku or "")
-        self.location_value.setText(detail.location or "")
+        self.location_value.setText(self._detail_locations_text(detail.locations))
         self.notes_text.setPlainText(detail.part.notes or "")
 
     def _get_slot_choices(self) -> list[tuple[int, str]]:
@@ -380,8 +362,9 @@ class InventoryScreen(QWidget):
                 purchase_url=fields["purchase_url"],
                 notes=fields["notes"],
                 qty=fields["qty"],
-                slot_id=fields["slot_id"],
             )
+            if fields["locations"]:
+                self.context.inventory_service.replace_part_locations(part.id, fields["locations"])
             # Set fields not in upsert_part signature
             extra = {}
             if fields["manufacturer"]:
@@ -405,7 +388,12 @@ class InventoryScreen(QWidget):
         part = self.context.part_repo.get_part_by_id(self.current_part_id)
         if part is None:
             return
-        dialog = PartDialog(self, part=part, **self._part_dialog_options())
+        dialog = PartDialog(
+            self,
+            part=part,
+            locations=self.context.inventory_service.list_part_locations(part.id),
+            **self._part_dialog_options(),
+        )
         if dialog.exec() != PartDialog.DialogCode.Accepted:
             return
         fields = dialog.get_fields()
@@ -424,8 +412,11 @@ class InventoryScreen(QWidget):
                 default_package=fields["default_package"],
                 notes=fields["notes"],
                 qty=fields["qty"],
-                slot_id=fields["slot_id"],
                 storage_class_override=fields.get("storage_class_override"),
+            )
+            self.context.inventory_service.replace_part_locations(
+                self.current_part_id,
+                fields["locations"],
             )
             self.context.search_service.rebuild()
             self.refresh_current_detail()
@@ -481,9 +472,6 @@ class InventoryScreen(QWidget):
                 self.context.inventory_service.update_part(
                     part_id, default_package=str(value).strip() or None,
                 )
-            elif column == 4:  # Location
-                slot_id = value  # slot_id (int) or None from delegate
-                self.context.inventory_service.update_part(part_id, slot_id=slot_id)
             elif column == 5:  # SKU
                 self.context.inventory_service.update_part(
                     part_id, supplier_sku=str(value).strip() or None,
@@ -518,11 +506,21 @@ class InventoryScreen(QWidget):
         if self.current_part_id is None:
             QMessageBox.information(self, "Select a part", "Select a part first.")
             return
-        part = self.context.part_repo.get_part_by_id(self.current_part_id)
-        if part is None or part.slot_id is None:
+        locations = self.context.inventory_service.list_part_locations(self.current_part_id)
+        if not locations or (len(locations) == 1 and locations[0].is_unassigned):
             QMessageBox.information(self, "Not assigned", "This part has no storage assignment.")
             return
-        self.find_in_storage_requested.emit(part.slot_id)
+        if len(locations) == 1:
+            self.find_in_storage_requested.emit(locations[0].slot_id)
+            return
+
+        menu = QMenu(self)
+        for location in locations:
+            action = menu.addAction(f"{location.location_label} ({location.qty})")
+            action.setData(location.slot_id)
+        chosen = menu.exec(self.find_storage_btn.mapToGlobal(self.find_storage_btn.rect().bottomLeft()))
+        if chosen is not None:
+            self.find_in_storage_requested.emit(int(chosen.data()))
 
     def _add_alias(self) -> None:
         if self.current_part_id is None:
@@ -536,3 +534,34 @@ class InventoryScreen(QWidget):
             self.refresh_current_detail()
         except Exception as exc:
             QMessageBox.critical(self, "Alias failed", str(exc))
+
+    def _open_locations_editor(self, part_id: int, index=None) -> None:
+        part = self.context.part_repo.get_part_by_id(part_id)
+        if part is None:
+            return
+
+        dialog = PartLocationsDialog(
+            self,
+            part_name=part.name,
+            total_qty=part.qty,
+            slot_choices=self._get_slot_choices(),
+            initial_locations=self.context.inventory_service.list_part_locations(part_id),
+            default_slot_id=self.context.inventory_service.get_unassigned_slot_id(),
+        )
+        if index is not None:
+            rect = self.inventory_table.visualRect(index)
+            global_pos = self.inventory_table.viewport().mapToGlobal(rect.bottomLeft())
+            dialog.move(global_pos)
+        if dialog.exec() != PartLocationsDialog.DialogCode.Accepted:
+            return
+        try:
+            self.context.inventory_service.replace_part_locations(part_id, dialog.get_locations())
+            self.refresh_current_detail()
+        except Exception as exc:
+            QMessageBox.critical(self, "Locations update failed", str(exc))
+
+    @staticmethod
+    def _detail_locations_text(locations) -> str:
+        if not locations or (len(locations) == 1 and locations[0].is_unassigned):
+            return ""
+        return "\n".join(f"{location.location_label} ({location.qty})" for location in locations)

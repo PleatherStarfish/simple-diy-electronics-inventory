@@ -313,48 +313,74 @@ class TestMergeDataIntegrity:
 class TestMergeSlots:
     def test_keeper_has_slot_removed_does_not(self, ctx):
         slot_id = _create_slot(ctx, "Box1", "A1")
-        p1 = _make_part(ctx, name="Part A", slot_id=slot_id)
+        p1 = _make_part(ctx, name="Part A", qty=5, slot_id=slot_id)
         p2 = _make_part(ctx, name="Part B")
         result = ctx["dedup_svc"].merge_parts(p1.id, p2.id)
         merged = ctx["part_repo"].get_part_by_id(p1.id)
         assert merged.slot_id == slot_id
+        assert merged.qty == 5
+        assert [
+            (location.slot_id, location.qty)
+            for location in ctx["part_repo"].list_part_locations(p1.id)
+        ] == [(slot_id, 5)]
         assert result.discarded_slot_label is None
 
     def test_keeper_no_slot_adopts_removed_slot(self, ctx):
         slot_id = _create_slot(ctx, "Box1", "A1")
         p1 = _make_part(ctx, name="Part A")
-        p2 = _make_part(ctx, name="Part B", slot_id=slot_id)
+        p2 = _make_part(ctx, name="Part B", qty=5, slot_id=slot_id)
         result = ctx["dedup_svc"].merge_parts(p1.id, p2.id)
         merged = ctx["part_repo"].get_part_by_id(p1.id)
         assert merged.slot_id == slot_id
+        assert merged.qty == 5
+        assert [
+            (location.slot_id, location.qty)
+            for location in ctx["part_repo"].list_part_locations(p1.id)
+        ] == [(slot_id, 5)]
         assert result.discarded_slot_label is None
 
-    def test_different_slots_requires_keep_slot_id(self, ctx):
+    def test_different_slots_preserve_both_locations(self, ctx):
         slot_a = _create_slot(ctx, "Box1", "A1")
         slot_b = _create_slot(ctx, "Box2", "B1")
-        p1 = _make_part(ctx, name="Part A", slot_id=slot_a)
-        p2 = _make_part(ctx, name="Part B", slot_id=slot_b)
-        with pytest.raises(ValueError, match="Slot conflict"):
-            ctx["dedup_svc"].merge_parts(p1.id, p2.id)
+        p1 = _make_part(ctx, name="Part A", qty=3, slot_id=slot_a)
+        p2 = _make_part(ctx, name="Part B", qty=2, slot_id=slot_b)
+        result = ctx["dedup_svc"].merge_parts(p1.id, p2.id)
+        merged = ctx["part_repo"].get_part_by_id(p1.id)
+        assert merged.slot_id is None
+        assert merged.qty == 5
+        assert [
+            (location.slot_id, location.qty)
+            for location in ctx["part_repo"].list_part_locations(p1.id)
+        ] == [(slot_a, 3), (slot_b, 2)]
+        assert result.discarded_slot_label is None
 
-    def test_different_slots_with_choice(self, ctx):
+    def test_different_slots_with_choice_keeps_split_locations(self, ctx):
         slot_a = _create_slot(ctx, "Box1", "A1")
         slot_b = _create_slot(ctx, "Box2", "B1")
-        p1 = _make_part(ctx, name="Part A", slot_id=slot_a)
-        p2 = _make_part(ctx, name="Part B", slot_id=slot_b)
+        p1 = _make_part(ctx, name="Part A", qty=3, slot_id=slot_a)
+        p2 = _make_part(ctx, name="Part B", qty=2, slot_id=slot_b)
         result = ctx["dedup_svc"].merge_parts(p1.id, p2.id, keep_slot_id=slot_a)
         merged = ctx["part_repo"].get_part_by_id(p1.id)
-        assert merged.slot_id == slot_a
-        assert result.discarded_slot_label is not None
-        assert "Box2" in result.discarded_slot_label
+        assert merged.slot_id is None
+        assert merged.qty == 5
+        assert [
+            (location.slot_id, location.qty)
+            for location in ctx["part_repo"].list_part_locations(p1.id)
+        ] == [(slot_a, 3), (slot_b, 2)]
+        assert result.discarded_slot_label is None
 
     def test_same_slot_no_conflict(self, ctx):
         slot_id = _create_slot(ctx, "Box1", "A1")
-        p1 = _make_part(ctx, name="Part A", slot_id=slot_id)
-        p2 = _make_part(ctx, name="Part B", slot_id=slot_id)
+        p1 = _make_part(ctx, name="Part A", qty=3, slot_id=slot_id)
+        p2 = _make_part(ctx, name="Part B", qty=2, slot_id=slot_id)
         result = ctx["dedup_svc"].merge_parts(p1.id, p2.id)
         merged = ctx["part_repo"].get_part_by_id(p1.id)
         assert merged.slot_id == slot_id
+        assert merged.qty == 5
+        assert [
+            (location.slot_id, location.qty)
+            for location in ctx["part_repo"].list_part_locations(p1.id)
+        ] == [(slot_id, 5)]
         assert result.discarded_slot_label is None
 
 

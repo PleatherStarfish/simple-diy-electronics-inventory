@@ -626,13 +626,8 @@ class ManualMergeDialog(QDialog):
         ]
         self._add_section("NOTES & DATES", meta_rows, hard_fields, warn_fields)
 
-        # ── Slot conflict ──
-        conflict = (pa.slot_id and pb.slot_id and pa.slot_id != pb.slot_id)
-        self._slot_container.setVisible(bool(conflict))
-        if conflict:
-            self._slot_a_radio.setText(loc_a or f"#{pa.slot_id}")
-            self._slot_b_radio.setText(loc_b or f"#{pb.slot_id}")
-            self._slot_a_radio.setChecked(True)
+        # Multi-location merge keeps all locations, so no slot choice is needed.
+        self._slot_container.setVisible(False)
 
         # ── Chips ──
         parts: list[str] = []
@@ -737,10 +732,6 @@ class ManualMergeDialog(QDialog):
         keep = pa if keep_a else pb
         remove = pb if keep_a else pa
 
-        slot_id = None
-        if pa.slot_id and pb.slot_id and pa.slot_id != pb.slot_id:
-            slot_id = pa.slot_id if self._slot_a_radio.isChecked() else pb.slot_id
-
         # Build warning text
         warning_lines = f'Merge "{remove.name}" into "{keep.name}"?\n\n'
         warning_lines += "Quantities, aliases, and BOM references will be combined.\n"
@@ -762,7 +753,7 @@ class ManualMergeDialog(QDialog):
 
         try:
             self.context.dedup_service.merge_parts(
-                keep.id, remove.id, keep_slot_id=slot_id,
+                keep.id, remove.id,
                 sig_a=self._sig_a, sig_b=self._sig_b,
                 overrides=self._collect_overrides(),
             )

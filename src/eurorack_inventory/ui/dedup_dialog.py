@@ -448,13 +448,8 @@ class DedupDialog(QDialog):
         self._comparison_table.resizeColumnsToContents()
         self._comparison_table.setColumnWidth(0, 85)
 
-        # Slot conflict
-        conflict = (pa.slot_id and pb.slot_id and pa.slot_id != pb.slot_id)
-        self._slot_container.setVisible(bool(conflict))
-        if conflict:
-            self._slot_a_radio.setText(loc_a or f"#{pa.slot_id}")
-            self._slot_b_radio.setText(loc_b or f"#{pb.slot_id}")
-            self._slot_a_radio.setChecked(True)
+        # Multi-location merge keeps all locations, so no slot choice is needed.
+        self._slot_container.setVisible(False)
 
         # Chips
         parts: list[str] = []
@@ -560,10 +555,6 @@ class DedupDialog(QDialog):
         keep = pair.part_a if keep_a else pair.part_b
         remove = pair.part_b if keep_a else pair.part_a
 
-        slot_id = None
-        if pair.part_a.slot_id and pair.part_b.slot_id and pair.part_a.slot_id != pair.part_b.slot_id:
-            slot_id = pair.part_a.slot_id if self._slot_a_radio.isChecked() else pair.part_b.slot_id
-
         reply = QMessageBox.question(
             self, "Confirm Merge",
             f'Merge "{remove.name}" into "{keep.name}"?\n\n'
@@ -575,7 +566,7 @@ class DedupDialog(QDialog):
             return
         try:
             self.context.dedup_service.merge_parts(
-                keep.id, remove.id, keep_slot_id=slot_id,
+                keep.id, remove.id,
                 score=pair.score, reasons=pair.match_reasons,
                 sig_a=pair.sig_a, sig_b=pair.sig_b,
                 overrides=self._collect_overrides(),

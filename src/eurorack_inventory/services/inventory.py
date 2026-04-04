@@ -4,7 +4,7 @@ import logging
 import sqlite3
 
 from eurorack_inventory.domain.enums import CellLength, CellSize, SlotType, StorageClass
-from eurorack_inventory.domain.models import Part, PartAlias, PartDetail
+from eurorack_inventory.domain.models import Part, PartAlias, PartDetail, PartLocation
 from eurorack_inventory.repositories.audit import AuditRepository
 from eurorack_inventory.repositories.parts import PartRepository
 from eurorack_inventory.repositories.storage import StorageRepository
@@ -92,25 +92,24 @@ class InventoryService:
             payload={"fields": list(fields.keys())},
         )
         # If the part's storage class changed, check whether it still fits
-        if "storage_class_override" in fields and updated.slot_id is not None:
+        if "storage_class_override" in fields:
             self._unassign_if_incompatible(updated)
+            refreshed = self.part_repo.get_part_by_id(part_id)
+            if refreshed is not None:
+                updated = refreshed
         return updated
 
     def _unassign_if_incompatible(self, part: Part) -> None:
-        """Unassign part from its slot if the slot's storage class is forbidden."""
-        if part.slot_id is None:
-            return
-        slot = self.storage_repo.get_slot(part.slot_id)
-        if slot is None:
-            return
-        slot_class = _slot_to_storage_class(slot)
-        if slot_class is None:
-            return
+        """Unassign any stored quantities that no longer fit their slots."""
         compat = classify_part_compat(part)
-        if compat.penalty_for(slot_class) is None:
-            # Forbidden — move to unassigned
-            self.part_repo.update_part(part.id, slot_id=None)
-            part.slot_id = None
+        for location in self.part_repo.list_part_locations(part.id):
+            slot = self.storage_repo.get_slot(location.slot_id)
+            if slot is None:
+                continue
+            slot_class = _slot_to_storage_class(slot)
+            if slot_class is None or compat.penalty_for(slot_class) is not None:
+                continue
+            self.part_repo.move_part_location(part.id, location.slot_id, None)
             self.audit_repo.add_event(
                 event_type="part.auto_unassigned",
                 entity_type="part",
@@ -181,13 +180,33 @@ class InventoryService:
     def list_inventory(self, part_ids: list[int] | None = None):
         return self.part_repo.list_inventory_summaries(part_ids)
 
+    def list_part_locations(self, part_id: int) -> list[PartLocation]:
+        return self.part_repo.list_part_locations(part_id)
+
     def get_part_detail(self, part_id: int) -> PartDetail:
         part = self.part_repo.get_part_by_id(part_id)
         if part is None:
             raise ValueError(f"Unknown part {part_id}")
         aliases = self.part_repo.list_aliases_for_part(part_id)
+        locations = self.part_repo.list_part_locations(part_id)
         location = self.part_repo.get_part_location(part_id)
-        return PartDetail(part=part, aliases=aliases, location=location)
+        return PartDetail(part=part, aliases=aliases, location=location, locations=locations)
+
+    def replace_part_locations(self, part_id: int, locations: list[tuple[int | None, int]]) -> Part:
+        part = self.part_repo.get_part_by_id(part_id)
+        if part is None:
+            raise ValueError(f"Unknown part {part_id}")
+        self.part_repo.replace_part_locations(part_id, locations)
+        updated = self.part_repo.get_part_by_id(part_id)
+        assert updated is not None
+        self.audit_repo.add_event(
+            event_type="part.locations_updated",
+            entity_type="part",
+            entity_id=part_id,
+            message=f"Updated locations for part {updated.name}",
+            payload={"location_count": len(self.part_repo.list_part_locations(part_id))},
+        )
+        return updated
 
     def unassign_parts(self, part_ids: list[int]) -> None:
         """Clear slot assignment for the given parts, making them unassigned."""
@@ -203,7 +222,27 @@ class InventoryService:
                 payload={},
             )
 
-    def reassign_part_slot(self, part_id: int, new_slot_id: int) -> Part:
+    def unassign_parts_from_slot(self, part_ids: list[int], source_slot_id: int) -> None:
+        if not part_ids:
+            return
+        slot = self.storage_repo.get_slot(source_slot_id)
+        slot_label = slot.label if slot else f"slot #{source_slot_id}"
+        for part_id in part_ids:
+            self.part_repo.move_part_location(part_id, source_slot_id, None)
+            self.audit_repo.add_event(
+                event_type="part.unassigned",
+                entity_type="part",
+                entity_id=part_id,
+                message=f"Part quantity moved out of {slot_label}",
+                payload={"source_slot_id": source_slot_id},
+            )
+
+    def reassign_part_slot(
+        self,
+        part_id: int,
+        new_slot_id: int,
+        source_slot_id: int | None = None,
+    ) -> Part:
         """Move a part to a different storage slot.
 
         For grid cells (capacity 1): existing occupants are bumped to Unassigned.
@@ -227,18 +266,35 @@ class InventoryService:
         else:
             # Grid cell or other slot: bump existing occupants to Unassigned
             if other_occupants:
-                unassigned_slot_id = self._get_unassigned_slot_id()
                 for occ in other_occupants:
-                    self.part_repo.update_part(occ.id, slot_id=unassigned_slot_id)
+                    self.part_repo.move_part_location(occ.id, new_slot_id, None)
                     self.audit_repo.add_event(
                         event_type="part.bumped",
                         entity_type="part",
                         entity_id=occ.id,
                         message=f"Bumped part {occ.name} to Unassigned (displaced by move)",
-                        payload={"from_slot_id": new_slot_id, "to_slot_id": unassigned_slot_id},
+                        payload={"from_slot_id": new_slot_id},
                     )
 
-        updated = self.part_repo.update_part(part_id, slot_id=new_slot_id)
+        locations = self.part_repo.list_part_locations(part_id)
+        if source_slot_id is None:
+            if len(locations) > 1:
+                raise ValueError(
+                    "Part has multiple locations. Move it from a specific slot or edit its locations."
+                )
+            if len(locations) == 1:
+                source_slot_id = locations[0].slot_id
+
+        if source_slot_id is None:
+            part = self.part_repo.get_part_by_id(part_id)
+            if part is None:
+                raise ValueError(f"Unknown part {part_id}")
+            self.part_repo.replace_part_locations(part_id, [(new_slot_id, part.qty)])
+        else:
+            self.part_repo.move_part_location(part_id, source_slot_id, new_slot_id)
+
+        updated = self.part_repo.get_part_by_id(part_id)
+        assert updated is not None
         container = self.storage_repo.get_container(slot.container_id) if slot else None
         loc = f"{container.name} / {slot.label}" if container and slot else f"slot #{new_slot_id}"
         self.audit_repo.add_event(
@@ -246,17 +302,20 @@ class InventoryService:
             entity_type="part",
             entity_id=part_id,
             message=f"Moved part {updated.name} to {loc}",
-            payload={"new_slot_id": new_slot_id},
+            payload={"new_slot_id": new_slot_id, "source_slot_id": source_slot_id},
         )
         return updated
 
-    def _get_unassigned_slot_id(self) -> int | None:
+    def get_unassigned_slot_id(self) -> int | None:
         """Get the Unassigned/Main slot ID."""
         container = self.storage_repo.get_container_by_name("Unassigned")
         if container is None:
             return None
         slot = self.storage_repo.get_slot_by_label(container.id, "Main")
         return slot.id if slot else None
+
+    def _get_unassigned_slot_id(self) -> int | None:
+        return self.get_unassigned_slot_id()
 
     def counts(self) -> dict[str, int]:
         return {

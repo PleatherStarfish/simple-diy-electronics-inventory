@@ -216,13 +216,7 @@ class AssignmentDialog(QDialog):
             qty_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
             self._part_table.setItem(row, 2, qty_item)
 
-            location = ""
-            if part.slot_id is not None and self.storage_repo is not None:
-                slot = self.storage_repo.get_slot(part.slot_id)
-                if slot is not None:
-                    container = self.storage_repo.get_container(slot.container_id)
-                    if container is not None:
-                        location = f"{container.name} / {slot.label}"
+            location = self.part_repo.get_part_location(part.id) if self.part_repo is not None else ""
             loc_item = QTableWidgetItem(location)
             loc_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
             self._part_table.setItem(row, 3, loc_item)

@@ -987,7 +987,7 @@ class StorageScreen(QWidget):
         length_abbr = "short" if cell_length == CellLength.SHORT.value else "long"
         parts = self._slot_parts.get(slot.id, [])
         if parts:
-            part_names = "\n".join(p.name for p in parts)
+            part_names = "\n".join(f"{p.name} ({p.qty})" for p in parts)
             return f"{slot.label}\n{part_names}"
         return f"{slot.label}\n{size_abbr} / {length_abbr}"
 
@@ -1019,7 +1019,7 @@ class StorageScreen(QWidget):
         header = f"{slot.label}  ({used}/{bag_count})"
         if not parts:
             return header
-        names = [p.name for p in parts]
+        names = [f"{p.name} ({p.qty})" for p in parts]
         return header + "\n" + "\n".join(names)
 
     def _binder_card_tooltip(self, slot: StorageSlot) -> str:
@@ -1265,19 +1265,19 @@ class StorageScreen(QWidget):
                 p = parts[0]
                 unassign_action = QAction(f"Unassign \"{p.name}\"", self)
                 unassign_action.triggered.connect(
-                    lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                    lambda checked, ids=[p.id], sid=slot.id: self._unassign_parts(ids, sid)
                 )
                 menu.addAction(unassign_action)
             else:
                 for p in parts:
                     action = QAction(f"Unassign \"{p.name}\"", self)
                     action.triggered.connect(
-                        lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                        lambda checked, ids=[p.id], sid=slot.id: self._unassign_parts(ids, sid)
                     )
                     menu.addAction(action)
                 all_action = QAction(f"Unassign all ({len(parts)} parts)", self)
                 all_action.triggered.connect(
-                    lambda checked, ids=[p.id for p in parts]: self._unassign_parts(ids)
+                    lambda checked, ids=[p.id for p in parts], sid=slot.id: self._unassign_parts(ids, sid)
                 )
                 menu.addAction(all_action)
 
@@ -1302,21 +1302,24 @@ class StorageScreen(QWidget):
             for p in parts:
                 unassign_action = QAction(f"Unassign \"{p.name}\"", self)
                 unassign_action.triggered.connect(
-                    lambda checked, ids=[p.id]: self._unassign_parts(ids)
+                    lambda checked, ids=[p.id], sid=slot.id: self._unassign_parts(ids, sid)
                 )
                 menu.addAction(unassign_action)
             if len(parts) > 1:
                 all_action = QAction(f"Unassign all ({len(parts)} parts)", self)
                 all_action.triggered.connect(
-                    lambda checked, ids=[p.id for p in parts]: self._unassign_parts(ids)
+                    lambda checked, ids=[p.id for p in parts], sid=slot.id: self._unassign_parts(ids, sid)
                 )
                 menu.addAction(all_action)
 
         menu.exec(global_pos)
 
-    def _unassign_parts(self, part_ids: list[int]) -> None:
+    def _unassign_parts(self, part_ids: list[int], slot_id: int | None = None) -> None:
         try:
-            self.context.inventory_service.unassign_parts(part_ids)
+            if slot_id is None:
+                self.context.inventory_service.unassign_parts(part_ids)
+            else:
+                self.context.inventory_service.unassign_parts_from_slot(part_ids, slot_id)
             if self.current_container_id is not None:
                 self.load_container(self.current_container_id)
             self._refresh_utilization()
@@ -1358,7 +1361,7 @@ class StorageScreen(QWidget):
         menu = QMenu(self)
         chosen: list[Part | None] = [None]
         for p in parts:
-            action = QAction(p.name, self)
+            action = QAction(f"{p.name} ({p.qty})", self)
             action.triggered.connect(lambda checked, part=p: chosen.__setitem__(0, part))
             menu.addAction(action)
         menu.exec(global_pos)
@@ -1367,7 +1370,11 @@ class StorageScreen(QWidget):
     def _on_part_dropped(self, part_id: int, source_slot_id: int, target_slot_id: int) -> None:
         """Handle a drag-and-drop part move."""
         try:
-            self.context.inventory_service.reassign_part_slot(part_id, target_slot_id)
+            self.context.inventory_service.reassign_part_slot(
+                part_id,
+                target_slot_id,
+                source_slot_id=source_slot_id,
+            )
             if self.current_container_id is not None:
                 self.load_container(self.current_container_id)
             self._refresh_utilization()

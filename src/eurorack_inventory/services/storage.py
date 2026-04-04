@@ -4,7 +4,7 @@ import logging
 from dataclasses import asdict
 
 from eurorack_inventory.domain.enums import CellLength, CellSize, ContainerType, SlotType, StorageClass
-from eurorack_inventory.domain.models import StorageContainer, StorageSlot, utc_now_iso as _utc_now_iso
+from eurorack_inventory.domain.models import StorageContainer, StorageSlot
 from eurorack_inventory.domain.storage import (
     GridRegion,
     grid_region_to_label,
@@ -430,27 +430,8 @@ class StorageService:
         if actual_cells != expected_cells:
             raise ValueError("Selected cells do not form a contiguous rectangle")
 
-        # Temporarily unassign parts from the occupied slot (if any) so the
-        # FK constraint (ON DELETE RESTRICT) allows us to delete the old slots.
-        # We'll reassign them to the new merged slot after creation.
-        reassign_part_ids: list[int] = []
-        if occupied_ids:
-            rows = self.storage_repo.db.query_all(
-                "SELECT id FROM parts WHERE slot_id = ?",
-                (occupied_ids[0],),
-            )
-            reassign_part_ids = [r["id"] for r in rows]
-            now = _utc_now_iso()
-            self.storage_repo.db.executemany(
-                "UPDATE parts SET slot_id = NULL, updated_at = ? WHERE id = ?",
-                [(now, pid) for pid in reassign_part_ids],
-            )
-
-        # Delete individual slots
-        for s in slots:
-            self.storage_repo.delete_slot(s.id)
-
-        # Create merged slot
+        # Create merged slot first so we can move any occupied source location
+        # onto the new region before deleting the old cells.
         merged_label = grid_region_to_label(merged_region)
         merged_slot = self.storage_repo.create_slot(
             StorageSlot(
@@ -469,13 +450,14 @@ class StorageService:
             )
         )
 
-        # Reassign parts from the previously occupied slot to the new merged slot
-        if reassign_part_ids:
-            now = _utc_now_iso()
-            self.storage_repo.db.executemany(
-                "UPDATE parts SET slot_id = ?, updated_at = ? WHERE id = ?",
-                [(merged_slot.id, now, pid) for pid in reassign_part_ids],
-            )
+        if occupied_ids and self.part_repo is not None:
+            parts_in_source = self.part_repo.list_parts_by_slot_ids([occupied_ids[0]])
+            for part in parts_in_source.get(occupied_ids[0], []):
+                self.part_repo.move_part_location(part.id, occupied_ids[0], merged_slot.id)
+
+        # Delete individual slots once nothing points at them.
+        for s in slots:
+            self.storage_repo.delete_slot(s.id)
 
         self.audit_repo.add_event(
             event_type="slot.merged",
@@ -585,7 +567,7 @@ class StorageService:
         for part in parts_map.get(slot.id, []):
             compat = classify_part_compat(part)
             if compat.penalty_for(slot_class) is None:
-                self.part_repo.update_part(part.id, slot_id=None)
+                self.part_repo.move_part_location(part.id, slot.id, None)
                 self.audit_repo.add_event(
                     event_type="part.auto_unassigned",
                     entity_type="part",
@@ -788,7 +770,7 @@ class StorageService:
         parts_sorted = sorted(parts, key=lambda p: p.id)
         overflow = parts_sorted[bag_count:]
         for part in overflow:
-            self.part_repo.update_part(part.id, slot_id=None)
+            self.part_repo.move_part_location(part.id, slot.id, None)
             self.audit_repo.add_event(
                 event_type="part.auto_unassigned",
                 entity_type="part",
@@ -809,10 +791,10 @@ class StorageService:
         unassigned_count = 0
         if self.part_repo is not None and slot_ids:
             parts_by_slot = self.part_repo.list_parts_by_slot_ids(slot_ids)
-            all_part_ids = [p.id for parts in parts_by_slot.values() for p in parts]
-            if all_part_ids:
-                self.part_repo.bulk_clear_slot_ids(all_part_ids)
-                unassigned_count = len(all_part_ids)
+            for slot_id, parts in parts_by_slot.items():
+                for part in parts:
+                    self.part_repo.move_part_location(part.id, slot_id, None)
+                    unassigned_count += 1
 
         for slot in slots:
             self.storage_repo.delete_slot(slot.id)
@@ -896,7 +878,7 @@ class StorageService:
             return False
         placeholders = ",".join("?" * len(slot_ids))
         count = self.storage_repo.db.scalar(
-            f"SELECT COUNT(*) FROM parts WHERE slot_id IN ({placeholders}) AND qty > 0",
+            f"SELECT COUNT(*) FROM part_locations WHERE slot_id IN ({placeholders}) AND qty > 0",
             tuple(slot_ids),
         )
         return int(count or 0) > 0

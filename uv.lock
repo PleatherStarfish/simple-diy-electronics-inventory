@@ -482,7 +482,7 @@ wheels = [
 
 [[package]]
 name = "simple-diy-electronics-inventory"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "openpyxl" },

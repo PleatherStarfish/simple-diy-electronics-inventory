@@ -139,12 +139,17 @@ class AssignmentService:
                 estimate=StorageEstimate(),
             )
 
+        locations_by_part = self.part_repo.list_part_locations_for_parts(
+            [part.id for part in parts if part.id is not None]
+        )
+
         # 2. Map available slots (with capacity model)
         in_scope_slot_ids: set[int] = set()
         if mode == "full_rebuild":
-            for part in parts:
-                if part.slot_id is not None and part.slot_id != unassigned_slot_id:
-                    in_scope_slot_ids.add(part.slot_id)
+            for locations in locations_by_part.values():
+                for location in locations:
+                    if not location.is_unassigned:
+                        in_scope_slot_ids.add(location.slot_id)
         available = self._gather_available_slots(
             unassigned_slot_id, in_scope_slot_ids,
             target_container_id=scope.target_container_id,
@@ -182,15 +187,17 @@ class AssignmentService:
         """Apply a plan transactionally. Returns the assignment run ID."""
         db = self.part_repo.db
 
-        # Build snapshot of current slot_ids for all parts in the plan
+        # Build snapshot of current placement lists for all parts in the plan
         all_part_ids = [pid for pid, _ in plan.assignments] + list(plan.unassigned_part_ids)
-        snapshot: list[list[int | None]] = []
+        snapshot: list[list[object]] = []
+        plan_locations: list[list[object]] = []
         for pid in all_part_ids:
             p = self.part_repo.get_part_by_id(pid)
             if p is not None:
-                snapshot.append([p.id, p.slot_id])
-
-        unassigned_slot_id = self._get_unassigned_slot_id()
+                snapshot.append([
+                    p.id,
+                    [[location.slot_id, location.qty] for location in self.part_repo.list_part_locations(pid)],
+                ])
 
         # For full_rebuild: clear existing slot_ids first
         if mode == "full_rebuild":
@@ -201,6 +208,11 @@ class AssignmentService:
         # Apply assignments
         if plan.assignments:
             self.part_repo.bulk_update_slot_ids(list(plan.assignments))
+            for pid, sid in plan.assignments:
+                part = self.part_repo.get_part_by_id(pid)
+                if part is None:
+                    continue
+                plan_locations.append([pid, [[sid, part.qty]]])
 
         # Persist the run
         now = utc_now_iso()
@@ -222,10 +234,7 @@ class AssignmentService:
                 now,
                 mode,
                 json.dumps(scope_dict, ensure_ascii=False),
-                json.dumps(
-                    [[pid, sid] for pid, sid in plan.assignments],
-                    ensure_ascii=False,
-                ),
+                json.dumps(plan_locations, ensure_ascii=False),
                 json.dumps(snapshot, ensure_ascii=False),
             ),
         )
@@ -265,7 +274,7 @@ class AssignmentService:
         """Undo an assignment run by restoring the snapshot.
 
         Returns (restored_count, conflict_warnings).
-        Conflicts occur when a part's current slot_id differs from what the
+        Conflicts occur when a part's current placements differ from what the
         plan assigned (i.e. the user moved it manually since the run).
         """
         db = self.part_repo.db
@@ -276,37 +285,48 @@ class AssignmentService:
         if row is None:
             return 0, []
 
-        snapshot: list[list[int | None]] = json.loads(row["snapshot_json"])
-        plan_assignments: list[list[int | None]] = json.loads(row["plan_json"])
+        snapshot: list[list[object]] = json.loads(row["snapshot_json"])
+        plan_assignments: list[list[object]] = json.loads(row["plan_json"])
 
-        # Build plan map: part_id → slot_id that the plan assigned
-        plan_map: dict[int, int] = {pid: sid for pid, sid in plan_assignments}
+        # Build plan map: part_id -> placement signature that the plan assigned
+        plan_map: dict[int, tuple[tuple[int, int], ...]] = {
+            int(pid): tuple((int(slot_id), int(qty)) for slot_id, qty in locations)
+            for pid, locations in plan_assignments
+        }
 
-        restore_ops: list[tuple[int, int | None]] = []
+        restore_ops: list[tuple[int, list[list[int]]]] = []
         conflicts: list[str] = []
 
-        for part_id, original_slot_id in snapshot:
+        for part_id, original_locations in snapshot:
             if part_id is None:
                 continue
             current = self.part_repo.get_part_by_id(part_id)
             if current is None:
                 continue
 
-            planned_slot = plan_map.get(part_id)
-            if planned_slot is not None and current.slot_id != planned_slot:
+            current_signature = tuple(
+                (location.slot_id, location.qty)
+                for location in self.part_repo.list_part_locations(part_id)
+            )
+            planned_signature = plan_map.get(part_id)
+            if planned_signature is not None and current_signature != planned_signature:
                 conflicts.append(
-                    f"Part '{current.name}' (id={part_id}): expected slot {planned_slot}, "
-                    f"found slot {current.slot_id} (moved since assignment)"
+                    f"Part '{current.name}' (id={part_id}) moved since assignment: "
+                    f"expected placements {planned_signature}, found {current_signature}"
                 )
                 continue
 
-            restore_ops.append((part_id, original_slot_id))
+            restore_ops.append((part_id, original_locations))
 
         now = utc_now_iso()
-        for part_id, original_slot_id in restore_ops:
+        for part_id, original_locations in restore_ops:
             db.execute(
-                "UPDATE parts SET slot_id = ?, updated_at = ? WHERE id = ?",
-                (original_slot_id, now, part_id),
+                "UPDATE parts SET updated_at = ? WHERE id = ?",
+                (now, part_id),
+            )
+            self.part_repo.replace_part_locations(
+                part_id,
+                [(int(slot_id), int(qty)) for slot_id, qty in original_locations],
             )
         db.execute(
             "UPDATE assignment_runs SET undone_at = ? WHERE id = ?",
@@ -398,17 +418,33 @@ class AssignmentService:
             # Return all matching parts — actual reset happens in apply_plan()
             return all_parts
 
+        location_map = self.part_repo.list_part_locations_for_parts(
+            [part.id for part in all_parts if part.id is not None]
+        )
+
         # Incremental: only unassigned parts, plus skip locked parts
         # (override + already placed → user explicitly classified and placed them)
-        return [
-            p for p in all_parts
-            if (p.slot_id is None or p.slot_id == unassigned_slot_id)
-            and not (
-                p.storage_class_override
-                and p.slot_id is not None
-                and p.slot_id != unassigned_slot_id
-            )
-        ]
+        eligible: list[Part] = []
+        for part in all_parts:
+            locations = location_map.get(part.id, [])
+            if len(locations) > 1:
+                continue
+
+            has_no_locations = not locations
+            is_single_unassigned = len(locations) == 1 and locations[0].is_unassigned
+            if not (has_no_locations or is_single_unassigned):
+                continue
+
+            if (
+                part.storage_class_override
+                and len(locations) == 1
+                and not locations[0].is_unassigned
+                and locations[0].slot_id != unassigned_slot_id
+            ):
+                continue
+
+            eligible.append(part)
+        return eligible
 
     def _gather_available_slots(
         self,

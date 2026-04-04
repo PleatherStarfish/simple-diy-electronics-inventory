@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
 )
 
 from eurorack_inventory.domain.enums import StorageClass
-from eurorack_inventory.domain.models import Part, StorageSlot
+from eurorack_inventory.domain.models import Part, PartLocation
+from eurorack_inventory.ui.part_locations_dialog import PartLocationsDialog
 
 _STORAGE_CLASS_LABELS = {
     StorageClass.SMALL_SHORT_CELL: "Small / Short Cell",
@@ -38,10 +41,21 @@ class PartDialog(QDialog):
         occupied_slot_ids: set[int] | None = None,
         categories: list[str] | None = None,
         packages: list[str] | None = None,
+        locations: list[PartLocation] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Part" if part else "New Part")
         self.setMinimumWidth(450)
+        self._slot_choices = slots or []
+        self._default_unassigned_slot_id = next(
+            (
+                slot_id
+                for slot_id, label in self._slot_choices
+                if label == "Unassigned / Main"
+            ),
+            None,
+        )
+        self._locations: list[tuple[int, int]] = []
 
         self.name_edit = QLineEdit()
         self.category_combo = self._make_searchable_combo(categories or [])
@@ -53,25 +67,16 @@ class PartDialog(QDialog):
         self.package_combo = self._make_searchable_combo(packages or [])
         self.qty_spin = QSpinBox()
         self.qty_spin.setRange(0, 999_999)
-        self.location_combo = QComboBox()
+        self.locations_summary = QLabel("")
+        self.locations_summary.setWordWrap(True)
+        self.manage_locations_btn = QPushButton("Manage...")
+        self.manage_locations_btn.clicked.connect(self._manage_locations)
         self.storage_type_combo = QComboBox()
         self.storage_type_combo.addItem("(auto)", None)
         for sc in StorageClass:
             self.storage_type_combo.addItem(_STORAGE_CLASS_LABELS[sc], sc.value)
         self.notes_edit = QTextEdit()
         self.notes_edit.setMaximumHeight(80)
-
-        # Populate location combo, coloring occupied slots
-        occupied = occupied_slot_ids or set()
-        self.location_combo.addItem("(none)", None)
-        model = self.location_combo.model()
-        for slot_id, label in (slots or []):
-            if slot_id in occupied:
-                self.location_combo.addItem(f"{label}  \u25cf", slot_id)
-                item = model.item(self.location_combo.count() - 1)
-                item.setForeground(QBrush(QColor(180, 130, 0)))
-            else:
-                self.location_combo.addItem(f"{label}  \u25cb", slot_id)
 
         # Pre-fill for edit mode
         if part is not None:
@@ -89,10 +94,9 @@ class PartDialog(QDialog):
                 idx = self.storage_type_combo.findData(part.storage_class_override)
                 if idx >= 0:
                     self.storage_type_combo.setCurrentIndex(idx)
-            if part.slot_id is not None:
-                idx = self.location_combo.findData(part.slot_id)
-                if idx >= 0:
-                    self.location_combo.setCurrentIndex(idx)
+        if locations:
+            self._locations = [(location.slot_id, location.qty) for location in locations]
+        self._refresh_locations_summary()
 
         form = QFormLayout()
         form.addRow("Name *", self.name_edit)
@@ -105,7 +109,10 @@ class PartDialog(QDialog):
         form.addRow("Package", self.package_combo)
         form.addRow("Quantity", self.qty_spin)
         form.addRow("Storage Type", self.storage_type_combo)
-        form.addRow("Location", self.location_combo)
+        locations_row = QHBoxLayout()
+        locations_row.addWidget(self.locations_summary, 1)
+        locations_row.addWidget(self.manage_locations_btn)
+        form.addRow("Locations", locations_row)
         form.addRow("Notes", self.notes_edit)
 
         buttons = QDialogButtonBox(
@@ -133,7 +140,42 @@ class PartDialog(QDialog):
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, "Validation", "Name is required.")
             return
+        if self._locations:
+            allocated = sum(qty for _slot_id, qty in self._locations)
+            if allocated != self.qty_spin.value():
+                QMessageBox.warning(
+                    self,
+                    "Validation",
+                    f"Location quantities must sum to {self.qty_spin.value()}. Currently allocated: {allocated}.",
+                )
+                return
         self.accept()
+
+    def _manage_locations(self) -> None:
+        dialog = PartLocationsDialog(
+            self,
+            part_name=self.name_edit.text().strip() or "New Part",
+            total_qty=self.qty_spin.value(),
+            slot_choices=self._slot_choices,
+            initial_locations=self._locations,
+            default_slot_id=self._default_unassigned_slot_id,
+        )
+        if dialog.exec() != PartLocationsDialog.DialogCode.Accepted:
+            return
+        self._locations = dialog.get_locations()
+        self._refresh_locations_summary()
+
+    def _refresh_locations_summary(self) -> None:
+        if not self._locations:
+            self.locations_summary.setText("(auto: Unassigned)")
+            return
+
+        label_map = dict(self._slot_choices)
+        lines = [
+            f"{label_map.get(slot_id, f'slot #{slot_id}')} ({qty})"
+            for slot_id, qty in self._locations
+        ]
+        self.locations_summary.setText("; ".join(lines))
 
     def get_fields(self) -> dict:
         """Return the field values entered by the user."""
@@ -148,6 +190,6 @@ class PartDialog(QDialog):
             "default_package": self.package_combo.currentText().strip() or None,
             "qty": self.qty_spin.value(),
             "storage_class_override": self.storage_type_combo.currentData(),
-            "slot_id": self.location_combo.currentData(),
+            "locations": list(self._locations),
             "notes": self.notes_edit.toPlainText().strip() or None,
         }

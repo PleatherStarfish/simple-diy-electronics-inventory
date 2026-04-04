@@ -35,6 +35,28 @@ class PartAlias:
 
 
 @dataclass(slots=True)
+class PartLocation:
+    id: int | None
+    part_id: int
+    slot_id: int
+    qty: int
+    created_at: str | None = None
+    updated_at: str | None = None
+    container_name: str | None = None
+    slot_label: str | None = None
+
+    @property
+    def is_unassigned(self) -> bool:
+        return self.container_name == "Unassigned"
+
+    @property
+    def location_label(self) -> str:
+        if self.container_name and self.slot_label:
+            return f"{self.container_name} / {self.slot_label}"
+        return f"slot #{self.slot_id}"
+
+
+@dataclass(slots=True)
 class StorageContainer:
     id: int | None
     name: str
@@ -76,6 +98,7 @@ class PartDetail:
     part: Part
     aliases: list[PartAlias]
     location: str
+    locations: list[PartLocation] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -219,33 +219,16 @@ class DedupService:
                 if "name" in overrides and "name" in overrides_applied:
                     update_fields["normalized_name"] = normalize_text(overrides["name"] or "")
 
-            # 3. Slot resolution
+            keep_locations = self.part_repo.list_part_locations(keep_id)
+            remove_locations = self.part_repo.list_part_locations(remove_id)
+            merged_locations: dict[int, int] = {}
+            for location in keep_locations + remove_locations:
+                merged_locations[location.slot_id] = (
+                    merged_locations.get(location.slot_id, 0) + location.qty
+                )
+
+            # 3. Location resolution
             discarded_slot_label: str | None = None
-            has_slot_conflict = (
-                keep.slot_id is not None
-                and remove.slot_id is not None
-                and keep.slot_id != remove.slot_id
-            )
-            if has_slot_conflict:
-                if keep_slot_id is None:
-                    raise ValueError(
-                        "Slot conflict: caller must specify keep_slot_id"
-                    )
-                if keep_slot_id not in (keep.slot_id, remove.slot_id):
-                    raise ValueError(
-                        f"keep_slot_id must be one of {keep.slot_id} or {remove.slot_id}"
-                    )
-                discarded_id = (
-                    remove.slot_id if keep_slot_id == keep.slot_id else keep.slot_id
-                )
-                # Find label for discarded slot
-                discarded_part_id = (
-                    remove_id if discarded_id == remove.slot_id else keep_id
-                )
-                discarded_slot_label = self.part_repo.get_part_location(discarded_part_id)
-                update_fields["slot_id"] = keep_slot_id
-            elif keep.slot_id is None and remove.slot_id is not None:
-                update_fields["slot_id"] = remove.slot_id
 
             # 4. Merge notes
             notes_parts = []
@@ -313,6 +296,7 @@ class DedupService:
 
             # 9. Apply field updates
             self.part_repo.update_part(keep_id, **update_fields)
+            self.part_repo.replace_part_locations(keep_id, list(merged_locations.items()))
 
             # 10. Delete removed part
             self.part_repo.delete_part(remove_id)
