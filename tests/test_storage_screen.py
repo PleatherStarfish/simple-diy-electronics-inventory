@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from eurorack_inventory.app import build_app_context
 from eurorack_inventory.domain.enums import CellLength, CellSize
@@ -127,6 +127,48 @@ def test_grid_merge_allows_one_occupied_slot_and_preserves_assignment(qapp, ui_c
     item = screen.grid_table.item(0, 0)
     assert item is not None
     assert "10k resistor" in item.text()
+
+    screen.close()
+
+
+def test_drag_drop_into_filled_cell_warns_before_bumping(qapp, ui_context, monkeypatch) -> None:
+    container = ui_context.storage_service.configure_grid_box(name="Warn Grid", rows=1, cols=2)
+    a0 = ui_context.storage_repo.get_slot_by_label(container.id, "A0")
+    a1 = ui_context.storage_repo.get_slot_by_label(container.id, "A1")
+    assert a0 is not None
+    assert a1 is not None
+
+    p1 = ui_context.inventory_service.upsert_part(
+        name="10k resistor",
+        category="Resistors",
+        qty=5,
+        slot_id=a0.id,
+    )
+    p2 = ui_context.inventory_service.upsert_part(
+        name="100k resistor",
+        category="Resistors",
+        qty=7,
+        slot_id=a1.id,
+    )
+
+    screen = StorageScreen(ui_context)
+    screen.show()
+    qapp.processEvents()
+
+    prompted: list[str] = []
+
+    def fake_question(_parent, _title, text, *_args, **_kwargs):
+        prompted.append(text)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", fake_question)
+
+    screen._on_part_dropped(p1.id, a0.id, a1.id)
+
+    assert prompted
+    assert "100k resistor" in prompted[0]
+    assert ui_context.part_repo.get_part_by_id(p1.id).slot_id == a0.id
+    assert ui_context.part_repo.get_part_by_id(p2.id).slot_id == a1.id
 
     screen.close()
 

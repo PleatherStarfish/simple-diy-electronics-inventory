@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from eurorack_inventory.db.connection import Database
 from eurorack_inventory.db.migrations import MigrationRunner
 from eurorack_inventory.domain.enums import StorageClass
@@ -94,6 +96,57 @@ def test_reassign_bumps_occupant_to_unassigned(tmp_path: Path) -> None:
     unassigned_slot = storage_repo.get_slot_by_label(unassigned_container.id, "Main")
     assert p2_updated.slot_id is None
     assert [(location.slot_id, location.qty) for location in part_repo.list_part_locations(p2.id)] == [
+        (unassigned_slot.id, 10),
+    ]
+
+    db.close()
+
+
+def test_replace_part_locations_requires_confirmation_flag_to_bump_occupant(tmp_path: Path) -> None:
+    migrations_dir = Path(__file__).resolve().parents[1] / "src" / "eurorack_inventory" / "db" / "migrations"
+    db = Database(tmp_path / "test.db")
+    MigrationRunner(db, migrations_dir).apply()
+
+    part_repo = PartRepository(db)
+    storage_repo = StorageRepository(db)
+    audit_repo = AuditRepository(db)
+    inventory_service = InventoryService(part_repo, storage_repo, audit_repo)
+    storage_service = StorageService(storage_repo, audit_repo)
+    unassigned_slot = storage_service.ensure_default_unassigned_slot()
+
+    container = storage_service.configure_grid_box(name="Box 1", rows=1, cols=2)
+    slots = storage_repo.list_slots_for_container(container.id)
+    slot_a = slots[0]
+
+    incumbent = inventory_service.upsert_part(
+        name="100R 0805",
+        category="Resistors",
+        qty=10,
+        slot_id=slot_a.id,
+    )
+    incoming = inventory_service.upsert_part(
+        name="220R 0805",
+        category="Resistors",
+        qty=5,
+    )
+
+    with pytest.raises(ValueError, match="occupied slots"):
+        inventory_service.replace_part_locations(incoming.id, [(slot_a.id, 5)])
+
+    assert part_repo.get_part_by_id(incumbent.id).slot_id == slot_a.id
+
+    updated = inventory_service.replace_part_locations(
+        incoming.id,
+        [(slot_a.id, 5)],
+        allow_displacement=True,
+    )
+
+    assert updated.slot_id == slot_a.id
+    assert [(location.slot_id, location.qty) for location in part_repo.list_part_locations(incoming.id)] == [
+        (slot_a.id, 5),
+    ]
+    assert part_repo.get_part_by_id(incumbent.id).slot_id is None
+    assert [(location.slot_id, location.qty) for location in part_repo.list_part_locations(incumbent.id)] == [
         (unassigned_slot.id, 10),
     ]
 

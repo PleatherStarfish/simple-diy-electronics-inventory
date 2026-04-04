@@ -1367,9 +1367,40 @@ class StorageScreen(QWidget):
         menu.exec(global_pos)
         return chosen[0]
 
+    def _confirm_part_displacement(self, part_id: int, target_slot_id: int) -> bool:
+        previews = self.context.inventory_service.preview_location_displacements(
+            [(target_slot_id, 1)],
+            excluding_part_id=part_id,
+        )
+        if not previews:
+            return True
+
+        part = self.context.part_repo.get_part_by_id(part_id)
+        part_name = part.name if part is not None else f"Part #{part_id}"
+        lines = []
+        for preview in previews:
+            occupants = ", ".join(f"{occupant.name} ({occupant.qty})" for occupant in preview.occupants)
+            lines.append(f"{preview.slot_label}: {occupants}")
+
+        reply = QMessageBox.question(
+            self,
+            "Replace Occupied Cell?",
+            (
+                f"Moving '{part_name}' here will move the current contents of these locations "
+                "to Unassigned:\n\n"
+                + "\n".join(lines)
+                + "\n\nContinue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _on_part_dropped(self, part_id: int, source_slot_id: int, target_slot_id: int) -> None:
         """Handle a drag-and-drop part move."""
         try:
+            if not self._confirm_part_displacement(part_id, target_slot_id):
+                return
             self.context.inventory_service.reassign_part_slot(
                 part_id,
                 target_slot_id,

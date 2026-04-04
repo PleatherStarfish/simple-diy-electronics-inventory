@@ -158,8 +158,7 @@ python -m eurorack_inventory --help
 
 ## Limitations
 
-- Each part stores a single quantity and one primary storage location. Splitting the same part across multiple locations is not yet supported.
-- The spreadsheet importer does not use location columns to auto-place parts.
+- The spreadsheet importer does not use source location columns to auto-place parts.
 - BOM PDF import requires Java and the optional `tabula-py` dependency (`pip install -e ".[bom-pdf]"`).
 - The app supports importing and matching BOMs but does not yet support authoring a BOM from scratch.
 
@@ -203,10 +202,13 @@ This separation keeps business rules outside the UI and makes the service layer 
 
 The app uses a single SQLite file with WAL journal mode and foreign keys enabled. Schema changes are tracked by numbered SQL migrations applied via `PRAGMA user_version`.
 
+For the full schema walkthrough and ER diagram, see [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md).
+
 | Table | Purpose |
 | --- | --- |
-| `parts` | Canonical component record with metadata, qty, optional slot, and storage class override |
+| `parts` | Canonical component record with metadata, total qty, denormalized primary slot shortcut, and storage class override |
 | `part_aliases` | Extra searchable names tied to a part |
+| `part_locations` | Authoritative multi-location placement rows with per-slot qty |
 | `storage_containers` | Named physical container with type and JSON metadata |
 | `storage_slots` | Individual compartment or merged region inside a container |
 | `modules` | Build target (called "projects" in the UI) |

@@ -16,6 +16,7 @@ SQLite stores all persistent state in one file.
 - foreign keys are enabled on every connection
 - WAL mode is enabled for responsive small writes
 - repositories are thin and explicit
+- the current schema is documented in `docs/DATABASE_DESIGN.md`
 
 ### 2. Domain
 The domain layer contains dataclasses and pure logic such as:
@@ -46,8 +47,8 @@ The UI is intentionally plain:
 
 ## Key design choices
 
-### Stock lots hold quantity
-A part can exist in many places at once. Quantities therefore live on stock lots.
+### Part locations hold quantity
+A part can exist in many places at once. Quantities therefore live on `part_locations`, while `parts.qty` stores the total across all locations.
 
 ### Containers and slots are generic
 The app models:
@@ -83,9 +84,9 @@ There are two visibility layers:
 4. the inventory table updates
 
 ### Adjust stock
-1. user selects a stock lot
-2. UI calls `InventoryService.adjust_stock`
-3. repository updates or deletes the lot
+1. user selects a part or storage placement
+2. UI calls an inventory/storage service method
+3. repository updates `parts.qty` and/or `part_locations`
 4. service writes an audit event
 5. UI refreshes selected views
 
@@ -93,7 +94,7 @@ There are two visibility layers:
 1. importer loads the workbook
 2. blank rows are skipped
 3. parts are upserted
-4. lots are placed in an import slot
+4. imported stock is placed in `Unassigned / Main`
 5. an audit event is written with summary counts
 
 ## Future extension points

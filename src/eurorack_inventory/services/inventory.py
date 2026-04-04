@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import sqlite3
 
@@ -12,6 +13,15 @@ from eurorack_inventory.services.classifier import classify_part_compat
 from eurorack_inventory.services.common import make_part_fingerprint, normalize_text
 
 logger = logging.getLogger(__name__)
+
+_EXCLUSIVE_SLOT_TYPES = {SlotType.GRID_REGION.value, SlotType.SLOT.value}
+
+
+@dataclass(slots=True)
+class SlotDisplacementPreview:
+    slot_id: int
+    slot_label: str
+    occupants: list[Part]
 
 
 def _slot_to_storage_class(slot) -> StorageClass | None:
@@ -192,10 +202,61 @@ class InventoryService:
         location = self.part_repo.get_part_location(part_id)
         return PartDetail(part=part, aliases=aliases, location=location, locations=locations)
 
-    def replace_part_locations(self, part_id: int, locations: list[tuple[int | None, int]]) -> Part:
+    def preview_location_displacements(
+        self,
+        locations: list[tuple[int | None, int]],
+        *,
+        excluding_part_id: int | None = None,
+    ) -> list[SlotDisplacementPreview]:
+        previews: list[SlotDisplacementPreview] = []
+        for slot_id in self._resolve_target_slot_ids(locations):
+            slot = self.storage_repo.get_slot(slot_id)
+            if slot is None:
+                raise ValueError(f"Unknown slot_id={slot_id}")
+
+            other_occupants = self._list_other_occupants(slot_id, excluding_part_id)
+            if slot.slot_type == SlotType.CARD.value:
+                bag_count = slot.metadata.get("bag_count", 4)
+                if len(other_occupants) + 1 > bag_count:
+                    raise ValueError(
+                        f"Card is full ({len(other_occupants)}/{bag_count} bags used)"
+                    )
+                continue
+
+            if slot.slot_type in _EXCLUSIVE_SLOT_TYPES and other_occupants:
+                previews.append(
+                    SlotDisplacementPreview(
+                        slot_id=slot_id,
+                        slot_label=self._format_slot_label(slot_id),
+                        occupants=other_occupants,
+                    )
+                )
+
+        return previews
+
+    def replace_part_locations(
+        self,
+        part_id: int,
+        locations: list[tuple[int | None, int]],
+        *,
+        allow_displacement: bool = False,
+    ) -> Part:
         part = self.part_repo.get_part_by_id(part_id)
         if part is None:
             raise ValueError(f"Unknown part {part_id}")
+        displacement_previews = self.preview_location_displacements(
+            locations,
+            excluding_part_id=part_id,
+        )
+        if displacement_previews and not allow_displacement:
+            labels = ", ".join(preview.slot_label for preview in displacement_previews)
+            raise ValueError(
+                f"Assigning to occupied slots would unassign existing parts: {labels}"
+            )
+        self._apply_slot_displacements(
+            displacement_previews,
+            reason="displaced by location reassignment",
+        )
         self.part_repo.replace_part_locations(part_id, locations)
         updated = self.part_repo.get_part_by_id(part_id)
         assert updated is not None
@@ -253,28 +314,14 @@ class InventoryService:
         if slot is None:
             raise ValueError(f"Unknown slot_id={new_slot_id}")
 
-        occupants = self.part_repo.list_parts_by_slot_ids([new_slot_id]).get(new_slot_id, [])
-        other_occupants = [o for o in occupants if o.id != part_id]
-
-        if slot.slot_type == SlotType.CARD.value:
-            # Binder card: check bag capacity — don't bump, just reject if full
-            bag_count = slot.metadata.get("bag_count", 4)
-            if len(other_occupants) >= bag_count:
-                raise ValueError(
-                    f"Card is full ({len(other_occupants)}/{bag_count} bags used)"
-                )
-        else:
-            # Grid cell or other slot: bump existing occupants to Unassigned
-            if other_occupants:
-                for occ in other_occupants:
-                    self.part_repo.move_part_location(occ.id, new_slot_id, None)
-                    self.audit_repo.add_event(
-                        event_type="part.bumped",
-                        entity_type="part",
-                        entity_id=occ.id,
-                        message=f"Bumped part {occ.name} to Unassigned (displaced by move)",
-                        payload={"from_slot_id": new_slot_id},
-                    )
+        displacement_previews = self.preview_location_displacements(
+            [(new_slot_id, 1)],
+            excluding_part_id=part_id,
+        )
+        self._apply_slot_displacements(
+            displacement_previews,
+            reason="displaced by move",
+        )
 
         locations = self.part_repo.list_part_locations(part_id)
         if source_slot_id is None:
@@ -305,6 +352,54 @@ class InventoryService:
             payload={"new_slot_id": new_slot_id, "source_slot_id": source_slot_id},
         )
         return updated
+
+    def _resolve_target_slot_ids(self, locations: list[tuple[int | None, int]]) -> list[int]:
+        resolved_slot_ids: list[int] = []
+        seen: set[int] = set()
+        unassigned_slot_id = self.get_unassigned_slot_id()
+        for slot_id, qty in locations:
+            if int(qty) <= 0:
+                continue
+            resolved_slot_id = slot_id if slot_id is not None else unassigned_slot_id
+            if resolved_slot_id is None:
+                raise ValueError("Unassigned slot is not configured")
+            if resolved_slot_id not in seen:
+                seen.add(resolved_slot_id)
+                resolved_slot_ids.append(resolved_slot_id)
+        return resolved_slot_ids
+
+    def _list_other_occupants(self, slot_id: int, excluding_part_id: int | None) -> list[Part]:
+        occupants = self.part_repo.list_parts_by_slot_ids([slot_id]).get(slot_id, [])
+        return [occupant for occupant in occupants if occupant.id != excluding_part_id]
+
+    def _format_slot_label(self, slot_id: int) -> str:
+        slot = self.storage_repo.get_slot(slot_id)
+        if slot is None:
+            return f"slot #{slot_id}"
+        container = self.storage_repo.get_container(slot.container_id)
+        if container is None:
+            return slot.label
+        return f"{container.name} / {slot.label}"
+
+    def _apply_slot_displacements(
+        self,
+        previews: list[SlotDisplacementPreview],
+        *,
+        reason: str,
+    ) -> None:
+        for preview in previews:
+            for occupant in preview.occupants:
+                self.part_repo.move_part_location(occupant.id, preview.slot_id, None)
+                self.audit_repo.add_event(
+                    event_type="part.bumped",
+                    entity_type="part",
+                    entity_id=occupant.id,
+                    message=f"Bumped part {occupant.name} to Unassigned ({reason})",
+                    payload={
+                        "from_slot_id": preview.slot_id,
+                        "from_slot_label": preview.slot_label,
+                    },
+                )
 
     def get_unassigned_slot_id(self) -> int | None:
         """Get the Unassigned/Main slot ID."""

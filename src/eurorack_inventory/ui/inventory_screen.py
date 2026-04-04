@@ -330,6 +330,39 @@ class InventoryScreen(QWidget):
                 choices.append((slot.id, f"{container.name} / {slot.label}"))
         return choices
 
+    def _confirm_location_displacements(
+        self,
+        *,
+        part_name: str,
+        locations: list[tuple[int | None, int]],
+        excluding_part_id: int | None = None,
+    ) -> bool:
+        previews = self.context.inventory_service.preview_location_displacements(
+            locations,
+            excluding_part_id=excluding_part_id,
+        )
+        if not previews:
+            return True
+
+        lines = []
+        for preview in previews:
+            occupants = ", ".join(f"{occupant.name} ({occupant.qty})" for occupant in preview.occupants)
+            lines.append(f"{preview.slot_label}: {occupants}")
+
+        reply = QMessageBox.question(
+            self,
+            "Replace Occupied Location?",
+            (
+                f"Assigning '{part_name}' will move the current contents of these locations "
+                "to Unassigned:\n\n"
+                + "\n".join(lines)
+                + "\n\nContinue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _adjust_qty(self, delta: int) -> None:
         if self.current_part_id is None:
             QMessageBox.information(self, "Select a part", "Select a part first.")
@@ -354,6 +387,11 @@ class InventoryScreen(QWidget):
             return
         fields = dialog.get_fields()
         try:
+            if fields["locations"] and not self._confirm_location_displacements(
+                part_name=fields["name"],
+                locations=fields["locations"],
+            ):
+                return
             part = self.context.inventory_service.upsert_part(
                 name=fields["name"],
                 category=fields["category"],
@@ -364,7 +402,11 @@ class InventoryScreen(QWidget):
                 qty=fields["qty"],
             )
             if fields["locations"]:
-                self.context.inventory_service.replace_part_locations(part.id, fields["locations"])
+                self.context.inventory_service.replace_part_locations(
+                    part.id,
+                    fields["locations"],
+                    allow_displacement=True,
+                )
             # Set fields not in upsert_part signature
             extra = {}
             if fields["manufacturer"]:
@@ -398,6 +440,12 @@ class InventoryScreen(QWidget):
             return
         fields = dialog.get_fields()
         try:
+            if not self._confirm_location_displacements(
+                part_name=fields["name"],
+                locations=fields["locations"],
+                excluding_part_id=self.current_part_id,
+            ):
+                return
             normalized_name = normalize_text(fields["name"])
             self.context.inventory_service.update_part(
                 self.current_part_id,
@@ -417,6 +465,7 @@ class InventoryScreen(QWidget):
             self.context.inventory_service.replace_part_locations(
                 self.current_part_id,
                 fields["locations"],
+                allow_displacement=True,
             )
             self.context.search_service.rebuild()
             self.refresh_current_detail()
@@ -556,7 +605,18 @@ class InventoryScreen(QWidget):
         if dialog.exec() != PartLocationsDialog.DialogCode.Accepted:
             return
         try:
-            self.context.inventory_service.replace_part_locations(part_id, dialog.get_locations())
+            locations = dialog.get_locations()
+            if not self._confirm_location_displacements(
+                part_name=part.name,
+                locations=locations,
+                excluding_part_id=part_id,
+            ):
+                return
+            self.context.inventory_service.replace_part_locations(
+                part_id,
+                locations,
+                allow_displacement=True,
+            )
             self.refresh_current_detail()
         except Exception as exc:
             QMessageBox.critical(self, "Locations update failed", str(exc))

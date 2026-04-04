@@ -1,0 +1,145 @@
+erDiagram
+    parts ||--o{ part_aliases : "search aliases"
+    parts ||--o{ part_locations : "stored in"
+    storage_containers ||--o{ storage_slots : "contains"
+    storage_slots ||--o{ part_locations : "holds qty"
+
+    modules ||--o{ bom_lines : "requires"
+    parts ||--o{ bom_lines : "used by"
+
+    modules ||--o{ builds : "has builds"
+    builds ||--o{ build_updates : "status history"
+
+    modules ||--o{ bom_sources : "promoted from"
+    bom_sources ||--o{ raw_bom_items : "extracts"
+    bom_sources ||--o{ normalized_bom_items : "normalizes"
+    raw_bom_items ||--o{ normalized_bom_items : "becomes"
+    parts ||--o{ normalized_bom_items : "matched to"
+
+    parts {
+        int id PK
+        text fingerprint UK
+        text name
+        text normalized_name
+        int qty
+        int slot_id
+        text storage_class_override
+    }
+
+    part_aliases {
+        int id PK
+        int part_id FK
+        text alias
+        text normalized_alias
+    }
+
+    part_locations {
+        int id PK
+        int part_id FK
+        int slot_id FK
+        int qty
+    }
+
+    storage_containers {
+        int id PK
+        text name UK
+        text container_type
+        text metadata_json
+    }
+
+    storage_slots {
+        int id PK
+        int container_id FK
+        text label
+        text slot_type
+        int x1
+        int y1
+        int x2
+        int y2
+        text metadata_json
+    }
+
+    modules {
+        int id PK
+        text fingerprint UK
+        text name
+        text maker
+    }
+
+    bom_lines {
+        int id PK
+        int module_id FK
+        int part_id FK
+        int qty_required
+    }
+
+    builds {
+        int id PK
+        int module_id FK
+        text nickname
+        text status
+    }
+
+    build_updates {
+        int id PK
+        int build_id FK
+        text created_at
+        text note
+    }
+
+    bom_sources {
+        int id PK
+        text filename
+        text file_hash
+        int promoted_project_id FK
+    }
+
+    raw_bom_items {
+        int id PK
+        int bom_source_id FK
+        int line_number
+        text raw_description
+    }
+
+    normalized_bom_items {
+        int id PK
+        int bom_source_id FK
+        int raw_item_id FK
+        int part_id FK
+        text normalized_value
+        int qty
+        text match_status
+    }
+
+    assignment_runs {
+        int id PK
+        text created_at
+        text mode
+        text scope_json
+        text plan_json
+        text snapshot_json
+        text undone_at
+    }
+
+    audit_events {
+        int id PK
+        text created_at
+        text event_type
+        text entity_type
+        int entity_id
+    }
+
+    settings {
+        text key PK
+        text value
+    }
+
+    dedup_feedback {
+        int id PK
+        int part_id_a
+        int part_id_b
+        text decision
+        real score
+        text reasons_json
+        text created_at
+    }
