@@ -545,6 +545,7 @@ class InventoryScreen(QWidget):
             part_name=part.name,
             total_qty=part.qty,
             slot_choices=self._get_slot_choices(),
+            occupied_slot_ids=self.context.part_repo.list_occupied_slot_ids(),
             initial_locations=self.context.inventory_service.list_part_locations(part_id),
             default_slot_id=self.context.inventory_service.get_unassigned_slot_id(),
         )

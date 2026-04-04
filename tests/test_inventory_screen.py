@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 from eurorack_inventory.app import build_app_context
 from eurorack_inventory.ui import inventory_screen as inventory_screen_module
 from eurorack_inventory.ui.inventory_screen import InventoryScreen
+from eurorack_inventory.ui.part_locations_dialog import PartLocationsDialog
 
 
 @pytest.fixture()
@@ -140,4 +141,62 @@ def test_double_clicking_locations_column_opens_locations_editor(qapp, ui_contex
     screen._on_inventory_double_clicked(index)
 
     assert called == [(part.id, 4)]
+    screen.close()
+
+
+def test_part_locations_dialog_marks_free_and_occupied_slots(qapp) -> None:
+    dialog = PartLocationsDialog(
+        part_name="TL072",
+        total_qty=4,
+        slot_choices=[(1, "Box 1 / A0"), (2, "Box 1 / A1")],
+        occupied_slot_ids={2},
+        initial_locations=[(1, 4)],
+    )
+
+    combo = dialog._rows[0].slot_combo
+    assert combo.itemText(1) == "Box 1 / A0  ○"
+    assert combo.itemText(2) == "Box 1 / A1  ●"
+
+    dialog.close()
+
+
+def test_inventory_screen_locations_editor_receives_occupied_slot_ids(qapp, ui_context, monkeypatch) -> None:
+    container = ui_context.storage_service.configure_grid_box(name="Box 1", rows=1, cols=2)
+    occupied_slot = ui_context.storage_repo.get_slot_by_label(container.id, "A0")
+    assert occupied_slot is not None
+
+    occupied_part = ui_context.inventory_service.upsert_part(
+        name="100R 0805",
+        category="Resistors",
+        qty=10,
+        slot_id=occupied_slot.id,
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeDialog:
+        class DialogCode:
+            Accepted = 1
+
+        def __init__(self, _parent=None, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def move(self, *_args, **_kwargs) -> None:
+            pass
+
+        def exec(self) -> int:
+            return 0
+
+        def get_locations(self):
+            return []
+
+    monkeypatch.setattr(inventory_screen_module, "PartLocationsDialog", _FakeDialog)
+
+    screen = InventoryScreen(ui_context)
+    screen.show()
+    qapp.processEvents()
+
+    screen._open_locations_editor(occupied_part.id)
+
+    assert captured["occupied_slot_ids"] == {occupied_slot.id}
     screen.close()

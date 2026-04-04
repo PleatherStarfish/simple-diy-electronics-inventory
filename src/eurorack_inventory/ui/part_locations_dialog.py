@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,18 +27,26 @@ class _LocationRow(QWidget):
         self,
         *,
         slot_choices: list[tuple[int, str]],
+        occupied_slot_ids: set[int] | None = None,
         slot_id: int | None = None,
         qty: int = 0,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._slot_choices = slot_choices
+        self._occupied_slot_ids = occupied_slot_ids or set()
 
         self.slot_combo = QComboBox()
         self.slot_combo.setEditable(False)
         self.slot_combo.addItem("Select a location", None)
+        model = self.slot_combo.model()
         for choice_id, label in slot_choices:
-            self.slot_combo.addItem(label, choice_id)
+            is_occupied = choice_id in self._occupied_slot_ids
+            marker = "  ●" if is_occupied else "  ○"
+            self.slot_combo.addItem(f"{label}{marker}", choice_id)
+            if is_occupied:
+                item = model.item(self.slot_combo.count() - 1)
+                item.setForeground(QBrush(QColor(180, 130, 0)))
         if slot_id is not None:
             index = self.slot_combo.findData(slot_id)
             if index >= 0:
@@ -71,6 +80,7 @@ class PartLocationsDialog(QDialog):
         part_name: str,
         total_qty: int,
         slot_choices: list[tuple[int, str]],
+        occupied_slot_ids: set[int] | None = None,
         initial_locations: list[PartLocation] | list[tuple[int, int]] | None = None,
         default_slot_id: int | None = None,
     ) -> None:
@@ -80,6 +90,7 @@ class PartLocationsDialog(QDialog):
 
         self._total_qty = total_qty
         self._slot_choices = slot_choices
+        self._occupied_slot_ids = occupied_slot_ids or set()
         self._rows: list[_LocationRow] = []
 
         self._summary_label = QLabel("")
@@ -146,7 +157,13 @@ class PartLocationsDialog(QDialog):
         self._add_row()
 
     def _add_row(self, *, slot_id: int | None = None, qty: int = 0) -> None:
-        row = _LocationRow(slot_choices=self._slot_choices, slot_id=slot_id, qty=qty, parent=self)
+        row = _LocationRow(
+            slot_choices=self._slot_choices,
+            occupied_slot_ids=self._occupied_slot_ids,
+            slot_id=slot_id,
+            qty=qty,
+            parent=self,
+        )
         row.changed.connect(self._update_summary)
         row.remove_requested.connect(self._remove_row)
         self._rows.append(row)

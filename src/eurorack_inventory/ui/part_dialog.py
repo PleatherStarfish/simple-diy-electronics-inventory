@@ -47,6 +47,7 @@ class PartDialog(QDialog):
         self.setWindowTitle("Edit Part" if part else "New Part")
         self.setMinimumWidth(450)
         self._slot_choices = slots or []
+        self._occupied_slot_ids = occupied_slot_ids or set()
         self._default_unassigned_slot_id = next(
             (
                 slot_id
@@ -157,6 +158,7 @@ class PartDialog(QDialog):
             part_name=self.name_edit.text().strip() or "New Part",
             total_qty=self.qty_spin.value(),
             slot_choices=self._slot_choices,
+            occupied_slot_ids=self._occupied_slot_ids,
             initial_locations=self._locations,
             default_slot_id=self._default_unassigned_slot_id,
         )
