@@ -30,8 +30,8 @@ The domain layer contains dataclasses and pure logic such as:
 ### 3. Services
 Services implement business rules:
 
-- move part of a stock lot to another slot
-- merge compatible lots
+- move part quantities between storage slots
+- merge duplicate parts and preserve placements
 - validate grid-slot overlap
 - import spreadsheet snapshots
 - keep audit trails

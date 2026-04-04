@@ -50,8 +50,6 @@ erDiagram
     raw_bom_items ||--o{ normalized_bom_items : "becomes"
     parts ||--o{ normalized_bom_items : "matched to"
 
-    parts ||--o{ dedup_feedback : "reviewed as A"
-
     parts {
         int id PK
         text fingerprint UK
@@ -402,6 +400,8 @@ Simple key/value storage for app configuration.
 
 Stores user decisions from duplicate review so merge/not-duplicate judgments survive future sessions.
 
+Notably, `part_id_a` and `part_id_b` are stored as plain ids rather than foreign keys. That lets historical review records survive even if parts are later merged or removed.
+
 ## Derived Objects
 
 ### `part_inventory_summary`
@@ -557,4 +557,3 @@ These are intentional compatibility compromises, not accidents.
 If you only remember one rule, use this one:
 
 > `parts` describes what a component is; `part_locations` describes where its quantity physically lives.
-
